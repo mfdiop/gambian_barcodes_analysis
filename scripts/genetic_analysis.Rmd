@@ -1,0 +1,1263 @@
+---
+title: "Genetic Data Analysis"
+output: word_document
+  # html_document:
+    # df_print: paged
+  # pdf_document: default
+  # word_document: default
+date: "2023-12-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# use this code to mport an imgae into the knited marckdown file
+# knitr::include_graphics()
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(devtools)
+library(ggrepel)
+library(ggthemes)
+library(cowplot)
+library(ggpubr)
+library(egg)
+library(sf)
+library(tinytex)
+library(readxl)
+library(xlsx)
+library(data.table)
+library(DT)
+library(ape)
+library(ggtree)
+library(ggimage)
+library(TDbook)
+library(flextable)
+library(dplyr)
+
+```
+
+## Research Goal
+
+We are looking at different drugs to understand if they are resistance or not to malaria parasite called plasmodium falciparum and how different genes associate with this resistance in the Nigeria, between and within locations. The work below focuses on the drug chloroquine. 
+
+## Analysis steps
+
+1. Clean the data
+2. Generate summary tables to show the proportion of drug resistance for different locations
+3. Generate different plots to show drug resistance within locations in the Nigeria
+4. Calculate the Identity By State (IBS) using samples barcodes
+5. Using the IBS matrix to generate different connections and cluster plots
+
+### Cleaning the data
+
+1. Filter for samples based on only the plasmodium falciparum from the dataset
+<!-- 2. Filter for samples with barcode missingness of less than 20% -->
+
+```{r main code, echo=FALSE, message=FALSE}
+
+### Read the logitude and latitude data
+nig_LongLat <- data.frame(read_excel("Nig_LongLat.xlsx"))
+chloroquine_tags <- data.frame(read_excel("chloroquine_tags.xlsx"))
+# LongLat_data$Regions <-  c("Central River","Central River",
+#                           "West Coast","North Bank",
+#                           "Upper River","Lower River",
+#                           "Upper River","Upper River", 
+#                           "West Coast","Upper River",
+#                           "West Coast","Upper River",
+#                           "West Coast","North Bank")
+
+### Read the combined Gaambian dataset
+nig_filtData <- data.frame(read_excel("combinedGRC_Nigeria.xlsx"))
+names(nig_filtData)[1] = "SampleId"
+
+# Rename Nigeria to NGA
+nig_filtData$Country[nig_filtData$Country == "Nigeria"] = "NGA"
+
+# Add category labels to the nigerian dataset using alleles definitions
+uniqueTags_filtData <- nig_filtData$PfCRT
+uniqueTags_TagsData <- chloroquine_tags$Alleles
+for(i in 1:length(uniqueTags_filtData)) {
+  for(k in 1:length(uniqueTags_TagsData)) {
+    if(uniqueTags_filtData[i] == uniqueTags_TagsData[k]) {
+      nig_filtData$Chloroquine[nig_filtData$PfCRT == uniqueTags_TagsData[k]] = chloroquine_tags$Category[k]
+    }
+  }
+}
+
+# Filter only Pf species
+nig_filtData <- nig_filtData %>% filter(Species == "Pf") %>%
+  dplyr::filter(Year >= 2017)
+
+nig_filtData1 <- nig_filtData %>% dplyr::select(SampleId, Year, Location, Chloroquine)
+
+summaryTab <- data.frame(unclass(table(nig_filtData1$Location, nig_filtData1$Chloroquine)))
+summaryTab$Location <- rownames(summaryTab)
+rownames(summaryTab) = NULL
+
+summaryTab$Total <- rowSums(summaryTab[, c("Mixed.Resistant", "Resistant", "Mixed.Sensitive", "Sensitive")])
+summaryTab$All_Resistance <- rowSums(summaryTab[, c("Mixed.Resistant","Resistant")])
+summaryTab <- left_join(summaryTab,nig_LongLat, by="Location")
+summaryTab$Resistance_per <- round(summaryTab$Resistant/summaryTab$Total * 100,1)
+summaryTab$MResistance_per <- round(summaryTab$Mixed.Resistant/summaryTab$Total * 100,1)
+summaryTab$Sensitive_per <- round(summaryTab$Sensitive/summaryTab$Total * 100,1) 
+summaryTab$MSensitive_per <- round(summaryTab$Mixed.Sensitive/summaryTab$Total * 100,1) 
+summaryTab$All_Resistance_per <- round(summaryTab$All_Resistance/summaryTab$Total * 100,1) 
+
+```
+
+
+
+### Proportion tables and plots showing sample counts and drug resistance and sensitivity for chloroquine
+#### Sample Count map
+This map shows a sample count. The circle sizes represent the number of samples from the specific location and from the tables we can also see the number of samples each location has in the brackets. From the plot we can see the highest is Ibadan state with 115 samples between the years 2017 to 2020 and the lowest is Edo state with 2 samples.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=12, fig.height=12}
+
+### Read the summaryTab data
+# summaryTab <- read_excel("C:/Users/Brandon/Documents/Genetic_Data_Analysis/summaryTab.xlsx")
+
+# Generate summary maps to display counts
+mapNGA <- st_read("gadm41_NGA_2.shp")
+## create sf objects for summaryTab
+summaryTab_sf <- st_as_sf(summaryTab, coords = c("long", "lat"), crs = st_crs(mapNGA))
+
+############ Sample Count plot
+
+breaks <- c(25, 50, 75,100,125)
+ggplot() +
+  geom_sf(data = mapNGA, fill = "white", color = "#2E8B57") +
+  geom_sf(data = summaryTab_sf, aes(size=Total), color = "#2F4F4F") +
+  geom_label_repel( data = summaryTab,
+                    aes(label =  paste(Location, " (", Total, ")", sep = "") ,x = long, y = lat ), 
+                    color = 'black',
+                    size = 2,
+                    box.padding = unit(1, "lines"),
+                    segment.color = '#132B43',
+                    angle = 45,
+                    max.overlaps = 20
+  ) +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  scale_size_continuous(range = c(0,15),breaks = breaks, limits = c(1, 125), name = "Count") +
+  ggtitle("Sample Count") + theme(plot.title = element_text(hjust = 0.5))
+
+
+# knitr::include_graphics("C:/Users/Brandon/Documents/Genetic_Data_Analysis/Main_Plots/samPlot.jpeg")
+```
+
+
+
+#### Grouped barchat showing chloroquine drug satus by location.
+Here we have a table and a grouped bar chart showing the count for each drug status category by location.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE,fig.width=12, fig.height=10}
+
+Status_table <- summaryTab %>% select(Location,Resistant, Sensitive, Mixed.Resistant,Mixed.Sensitive,Total)
+DT::datatable(Status_table,options = list(dom = 't'),rownames = FALSE)
+#flextable(Status_table) use this for pdfs or word documents
+
+#### grouped barchart for drug status
+summaryTab_long <- summaryTab %>% 
+   select(Location,Resistant, Sensitive, Mixed.Resistant,Mixed.Sensitive,Total) %>%
+  gather(key = Sample_Type, value = Count, -Location)
+
+summaryTab_long <- summaryTab_long[which(!(summaryTab_long$Sample_Type == "Total")),]
+
+# Create the grouped bar chart
+# p<-
+  ggplot(summaryTab_long, aes(x = Location, y = Count, fill = Sample_Type )) +
+  geom_bar(stat = "identity") +
+  labs(title = "Chloroquine Drug Staus Count by Location", x = "Location", y = "Count") +
+  scale_fill_manual(values = c("Resistant" = "#00BFC4", "Mixed.Resistant" = "#F8766D", "Sensitive" = "#C77CFF", "Mixed.Sensitive"="#FFBF00")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  guides(fill = guide_legend(title = "Status")) +
+  geom_text(aes(Location,Total + 7, label = Total, fill = NULL),data = summaryTab)
+
+# knitr::include_graphics("C:/Users/Brandon/Documents/Genetic_Data_Analysis/Main_Plots/D_Barchart.jpeg")
+```
+
+
+
+#### Chloroquine Resistance map
+This map shows the amount of samples that are resistant to the drug chloroquine. In each circle we see the proportion of resistant samples for each location. This proportions are calculated by dividing the amount of resistant samples coming from each location over the total amount of samples in the entire dataset.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE,fig.width=12, fig.height=12}
+
+ggplot() +
+  geom_sf(data = mapNGA, fill = "white", color = "#2E8B57") +
+  geom_sf(data = summaryTab_sf, aes(size = 50, color = Resistance_per)) +
+  geom_label_repel( data = summaryTab,
+                    aes(label = paste(Location, " (", Total, ")", sep = "") ,x = long, y = lat ), 
+                    color = 'black',
+                    size = 2,
+                    box.padding = unit(1.2, "lines"),
+                    segment.color = '#132B43',
+                    angle = 45,
+                    max.overlaps = 20) + 
+  geom_text(data = summaryTab, 
+            aes(label = Resistance_per,x  = long, y = lat),
+            size = 2, 
+            color = "white",
+            fontface = "bold") +
+  theme_void() +
+  guides(size ="none") +
+  theme(legend.position = "bottom") +
+  scale_color_gradient( high = "#132B43", low = "#56B1F7",name = "Resistance", limits = c(0, 100)) +
+  scale_size_continuous(range = c(1,15),breaks = breaks, limits = c(1, 90)) + 
+  ggtitle("Chloroquine Resistance") + theme(plot.title = element_text(hjust = 0.5))
+
+# knitr::include_graphics("C:/Users/Brandon/Documents/Genetic_Data_Analysis/Main_Plots/CResistance.jpeg")
+```
+
+
+
+#### Chloroquine Sensitive map
+This map shows the amount of samples that are sensitive to the drug chloroquine. In each circle we see the proportion of sensitive samples for each location. This proportions are calculated by dividing the amount of resistant samples coming from each location over the total amount of samples in the entire dataset.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE,fig.width=12, fig.height=12}
+
+ggplot() +
+  geom_sf(data = mapNGA, fill = "white", color = "#2E8B57") +
+  geom_sf(data = summaryTab_sf, aes(size = 50, color = Sensitive_per)) +
+  geom_label_repel( data = summaryTab,
+                    aes(label = paste(Location, " (", Total, ")", sep = "") ,x = long, y = lat ), 
+                    color = 'black',
+                    size = 2,
+                    box.padding = unit(1.2, "lines"),
+                    segment.color = '#132B43',
+                    angle = 45,
+                    max.overlaps = 20) + 
+  geom_text(data = summaryTab, 
+            aes(label = Sensitive_per, x  = long, y = lat),
+            size = 2, color = "white", fontface = "bold") +
+  theme_void() +
+  guides(size = "none") +
+  theme(legend.position = "bottom") +
+  scale_color_gradient( high = "#132B43", low = "#56B1F7", name = "Sensitive", limits = c(0, 100)) +
+  scale_size_continuous(range = c(1,15), breaks = breaks, limits = c(1, 90)) + 
+  ggtitle("Chloroquine Sensitive") +
+   theme(plot.title = element_text(hjust = 0.5))
+
+# knitr::include_graphics("C:/Users/Brandon/Documents/Genetic_Data_Analysis/Main_Plots/CSensitive.jpeg")
+```
+
+#### Chloroquine Mixed Resistance map
+This map shows the amount of samples that are mixed Resistance to the drug chloroquine. 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+# p<-
+#   ggplot() +
+#   geom_sf(data = GMB2, fill = "white", color = "#2F4F4F") +
+#   geom_sf(data = summaryTab_sf1, aes(size = 50, color = MResistance_prop)) +
+#   geom_label_repel( data = summaryTab,
+#                     aes(label = paste(Location, " (", Total, ")", sep = "") ,x = long, y = lat ), 
+#                     color = 'black',
+#                     size = 2,
+#                     box.padding = unit(1.2, "lines"),
+#                     segment.color = '#132B43',
+#                     angle = 45,
+#                     max.overlaps = 20
+#   ) +
+#   geom_text(data = summaryTab, 
+#             aes(label = MResistance_prop,x  = long, y = lat),
+#             size = 2.5, 
+#             color = "white",
+#             fontface = "bold") +
+#   theme_void() +
+#   guides(size ="none") +
+#   theme(legend.position = "bottom") +
+#   scale_color_gradient( high = "#132B43", low = "#56B1F7",name = "Chloroquine Mixed Resistance") +
+#   scale_size_continuous(range = c(1,10))
+
+
+# knitr::include_graphics("C:/Users/Brandon/Documents/Genetic_Data_Analysis/Main_Plots/MResistance.jpeg")
+```
+
+
+
+#### Chloroquine Mixed Resistance plus Resistant map
+This map shows a combination of samples that are mixed resistance plus those that are resistant to the drug chloroquine.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+# p<-
+#   ggplot() +
+#   geom_sf(data = GMB2, fill = "white", color = "#2F4F4F") +
+#   geom_sf(data = summaryTab_sf1, aes(size = 50, color = All.Resistance_prop)) +
+#   geom_label_repel( data = summaryTab,
+#                     aes(label = paste(Location, " (", Total, ")", sep = "") ,x = long, y = lat ), 
+#                     color = 'black',
+#                     size = 2,
+#                     box.padding = unit(1.2, "lines"),
+#                     segment.color = '#132B43',
+#                     angle = 45,
+#                     max.overlaps = 20
+#   ) +
+#   geom_text(data = summaryTab, 
+#             aes(label = All.Resistance_prop,x  = long, y = lat),
+#             size = 2.5, 
+#             color = "white",
+#             fontface = "bold") +
+#   theme_void() +
+#   guides(size ="none") +
+#   theme(legend.position = "bottom") + 
+#   scale_color_gradient( high = "#132B43", low = "#56B1F7",name = "All Resistance", limits = c(0, 100)) +
+#   scale_size_continuous(range = c(1,10))
+
+# knitr::include_graphics("C:/Users/Brandon/Documents/Genetic_Data_Analysis/Main_Plots/AllResistance.jpeg")
+```
+
+
+
+#### Calculating the Identity by State(IBS) matrix for futher analysis
+Our next stage of the analysis is to calculate a IBS matrix using the gene barcodes for each sample. The IBS matrix quantifies the proportion of alleles that are identical between pairs of individuals at specific genetic loci.
+Using the IBS matrix we can get information like **genetic similarities**, **population structure**, **relatedness** and **genetic diversity**. Before calculating the IBS matrix we filtered only for loci with less than 30% of barcode missingness. We are now left with 474 samples and 44 loci to use for downstream analysis.
+
+``` {r echo=FALSE, message=FALSE,warning=FALSE}
+barcodes_filt <- nig_filtData[,c(1,11,60:ncol(nig_filtData))]
+
+barcodes_filt <- barcodes_filt[which(!(barcodes_filt$Chloroquine == "Missing" | barcodes_filt$Chloroquine == "Undetermined")),]
+
+rownames(barcodes_filt) <- barcodes_filt[,1]
+
+barcodeChloro <- barcodes_filt[,2]
+
+barcodes_filt[,1:2] <- NULL
+
+barcodes_filt <- t(barcodes_filt)
+
+# Filter out only samples < 30% missingness
+library(stringr)
+filtDataProp2 = data.frame(matrix(nrow=ncol(barcodes_filt), ncol = 0))
+for(k in 1:nrow(barcodes_filt)) {
+  totalChar <- str_count(toString(barcodes_filt[k,]), pattern = "X|N") / length(barcodes_filt[k,]) * 100
+  if(totalChar < 30) {
+    filtDataProp1 = as.data.frame(barcodes_filt[k,])
+    filtDataProp1[filtDataProp1 == "A"] = "1"
+    filtDataProp1[filtDataProp1 == "C"] = "2"
+    filtDataProp1[filtDataProp1 == "G"] = "3"
+    filtDataProp1[filtDataProp1 == "T"] = "4"
+    filtDataProp1[filtDataProp1 == "N"] = "."
+    filtDataProp1[filtDataProp1 == "X"] = "."
+    colnames(filtDataProp1) <- rownames(barcodes_filt)[k]
+    filtDataProp2 = cbind.data.frame(filtDataProp2 ,filtDataProp1)
+  }
+}
+
+newDF_II <- filtDataProp2
+# 
+# calculateIBS = function(inputDF)
+# {
+#   library(data.table)
+#   file = inputDF # remove first 3 columns
+#   library(tictoc)
+#   tic()
+#   ibsDf = data.frame(matrix(, nrow=nrow(file), ncol=nrow(file)), row.names = row.names(file))
+#   colnames(ibsDf) <- row.names(file)
+# 
+#   for (i in 1:nrow(file)) #nrow(file)
+#   {
+#     message("************************************* Processing sample row [", i , "] *****************************************")
+#     tic()
+#     ibsDf[i,i] <- 1
+#     sample1 = as.matrix(file[i,])
+#     k = i+1
+#     while((i<k) & (k <= nrow(file)))
+#     {
+#       missingD=0
+#       s1_vs_s2 = numeric(length(sample1))
+#       sample2 = as.matrix(file[k,])
+#       for (j in 1:length(sample1))
+#       {
+#         #Split alts
+#         scol1 = sample1[j] #unlist(strsplit(as.character(sample1[j]), ","))
+#         scol2 = sample2[j] #unlist(strsplit(as.character(sample2[j]), ","))
+#         if (is.na(scol1) | is.na(scol2) )
+#         {
+#           missingD = missingD+1
+#         }
+#         else if (scol1 != scol2)
+#           s1_vs_s2[j] = 0
+#         else
+#           s1_vs_s2[j] = 1#length(which(scol1 %in% scol2))/(length(scol1) * length(scol2)) #s/ab
+#       }
+#       ibs = sum(s1_vs_s2)/(ncol(file)-missingD)
+#       ibsDf[i,k] <- ibs
+#       ibsDf[k,i] <- ibs
+#       k = k+1
+#     }
+#     toc()
+#   }
+#   return(ibsDf)
+# }
+# ibsDf <- calculateIBS(newDF_II)
+# 
+# ibsDf = as.matrix(ibsDf)
+
+# write.table(ibsDf, file="Results_3/mymatrix.txt")
+
+ibsDf <- as.matrix(read.table("Results_3/mymatrix.txt"))
+
+ibsDF_metadata <- nig_filtData1 %>% dplyr::select(SampleId,Year,Location,Chloroquine)
+ibsDF_metadata <- merge(ibsDF_metadata, nig_LongLat, by="Location")
+ibsDF_metadata <- ibsDF_metadata[which(ibsDF_metadata$SampleId %in% rownames(ibsDf)),]
+names(ibsDF_metadata)[2] <- "samples"
+
+##### PCOA PLOT ######
+library(umap)
+library(ggplot2)
+library(glue)
+# To create a 3D pcoa 
+
+##### USING UMAP METHOD ######
+# Two Dimensional PCoA
+ibsDf[is.na(ibsDf)]=0
+custom_config = umap.defaults
+custom_config$n_components = 3
+kk = umap(ibsDf, config = custom_config)
+kk = kk$layout
+m=match(rownames(kk), ibsDF_metadata$samples)
+kk = cbind(kk, ibsDF_metadata$Location[m])
+kk = as.data.frame(kk, stringsAsFactors = FALSE)
+kk$V1=as.numeric(kk$V1)
+kk$V2=as.numeric(kk$V2)
+kk$V3=as.numeric(kk$V3)
+kk$V4=as.factor(kk$V4)
+rownames(kk)=NULL
+
+site_counts <- table(kk$V4)
+legend_labels <- paste(names(site_counts), " (", site_counts, ")", sep = "")
+legend_values <-c(Abuja="#0d1137",Adamawa="#d72613",Calabar="#077b8a",Delta="#5c3c92",Edo="#801818", Ibadan="#e2d810",Kano="#12a4d9",Kebbi="#A25B5B",
+                  Lagos_Ijede="#6b7c8c",Lautech_Ogbomosho="#ff6c40",Ogun="#000075",Osun="#c4a35a",Owo="#12e761")
+```
+
+#### 3D PCoA Plot
+The figure show a 3D principle coordinate analysis plot using our IBS matrix
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ library(plotly)
+ plot_ly(kk, x = ~V1, y = ~V2, z = ~V3, color = ~V4, colors = legend_values)
+
+```
+
+
+The below figures shows comparisons between the different dimensions generated 
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(kk, aes(x=V1, y=V2)) +
+  geom_point(color='black', shape=21, size=5, aes(fill=factor(V4))) +
+  scale_fill_manual(name='Location', values=legend_values, labels=legend_labels) +
+  # labs(x=labs[1], y=labs[2]) +
+  labs(x="PCoA1", y="PCoA2") +
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(face="plain", color="black", size=6),
+    axis.text.y = element_text(face="plain", color="black", size=6),
+    axis.line = element_line(colour = "black", size = 0.5, linetype = "solid"),
+    # legend.title = element_blank(),
+    legend.text=element_text(size=6))
+
+ggplot(kk, aes(x=V1, y=V3)) +
+  geom_point(color='black', shape=21, size=5, aes(fill=factor(V4))) +
+  scale_fill_manual(name='Location', values=legend_values, labels=legend_labels) +
+  # labs(x=labs[1], y=labs[2]) +
+  labs(x="PCoA1", y="PCoA3") +
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(face="plain", color="black", size=6),
+    axis.text.y = element_text(face="plain", color="black", size=6),
+    axis.line = element_line(colour = "black", size = 0.5, linetype = "solid"),
+    # legend.title = element_blank(),
+    legend.text=element_text(size=6))
+
+ggplot(kk, aes(x=V2, y=V3)) +
+  geom_point(color='black', shape=21, size=5, aes(fill=factor(V4))) +
+  scale_fill_manual(name='Location', values=legend_values, labels=legend_labels) +
+  # labs(x=labs[1], y=labs[2]) +
+  labs(x="PCoA2", y="PCoA3") +
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.x = element_text(face="plain", color="black", size=6),
+    axis.text.y = element_text(face="plain", color="black", size=6),
+    axis.line = element_line(colour = "black", size = 0.5, linetype = "solid"),
+    # legend.title = element_blank(),
+    legend.text=element_text(size=6))
+```
+
+
+
+#### IBS Pair Count
+Here we have a table showing the amount of pairs each unique location pair has based on our 13 locations in Nigeria. We had a total of **836682** pairs from the ibs matrix. Pair_prob here in our table below is the result of dividing each location pair count over the total number of pairs from the ibs matrix.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+# IBS_PC <- read_excel("C:/Users/Brandon/Documents/Genetic_Data_Analysis/IBS_pair_count.xlsx")
+# IBS_PC <- IBS_PC %>% dplyr::rename(pair_percentage=pair_prob)
+# DT::datatable(IBS_PC,options = list(dom = 'Bfrtip'),rownames = FALSE)
+
+
+#data.table(IBS_PC)
+
+```
+
+
+
+#### IBS Heatmaps
+Below we have a heatmap showing a combination of resistant, mixed.resistant, sensitive, and mixed.sensitive pairs from the ibs matrix with the color gradient spanning from the lowest to the highest ibs score. 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=13, fig.height=8}
+###### PHEATMAP #####
+library(pheatmap)
+
+sampleNames = rownames(ibsDf)
+
+body <- ibsDF_metadata[ibsDF_metadata$samples %in% sampleNames,]
+
+
+colourz <- c("#0d1137","#d72613","#077b8a","#5c3c92","#801818", "#e2d810","#12a4d9","#A25B5B", "#6b7c8c","#ff6c40","#000075","#c4a35a","#12e761")
+names(colourz) <- c("Abuja", "Adamawa", "Calabar", "Delta", "Edo","Ibadan", "Kano","Kebbi","Lagos_Ijede","Lautech_Ogbomosho", "Ogun", "Osun", "Owo")
+
+anno_colors <- list(colourz = colourz)
+annotation <- data.frame(Site = factor(body$Location))
+rownames(annotation) <- colnames(ibsDf)
+
+sample_col <- data.frame(Site = body$Location, Condition = body$Chloroquine)
+row.names(sample_col) <- colnames(ibsDf)
+sample_col <- sample_col[order(sample_col$Site),]
+
+my_colour = list(
+  Condition = c(Sensitive = "#cf1578", Resistant = "#e8d21d", 'Mixed Resistant' ="#039fbe" ,'Mixed Sensitive'="#322514"),
+  Site = c(Abuja="#0d1137",Adamawa="#d72613",Calabar="#077b8a",Delta="#5c3c92",Edo="#801818", Ibadan="#e2d810",Kano="#12a4d9",Kebbi="#A25B5B",Lagos_Ijede="#6b7c8c",Lautech_Ogbomosho="#ff6c40",Ogun="#000075",Osun="#c4a35a",Owo="#12e761")
+)
+
+library(RColorBrewer)
+pheatmap(ibsDf, 
+         annotation_col = sample_col,
+         annotation_colors = my_colour,
+         color = hcl.colors(50, "BluYl"),
+         border_color      = NA,
+         show_colnames     = FALSE,
+         show_rownames     = FALSE,
+         cluster_cols = F,
+         cluster_rows = F,
+         drop_levels       = TRUE,
+         fontsize          = 14,
+         main              = "IBS Heatmap"
+         )
+# knitr::include_graphics("C:/Users/Brandon/Documents/Genetic_Data_Analysis/Main_Plots/R_Heatmap2.jpeg")
+```
+
+
+
+#### Generating connectivity plots
+
+The connectivity plot helps us to show how each state from our dataset relates to the other and the line width is what shows us how closely related these states are.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ibsDF <- reshape2::melt(ibsDf, na.rm = TRUE)
+m1 = match(ibsDF$Var1, ibsDF_metadata$samples)
+m2 = match(ibsDF$Var2, ibsDF_metadata$samples)
+ibsDF$site1="";ibsDF$site2="";
+ibsDF$site1 = ibsDF_metadata$Location[m1]
+ibsDF$site2 = ibsDF_metadata$Location[m2]
+ibsDF_filt <- NULL
+processed_pairs <- c()
+unique1 <- unique(ibsDF$site1)
+unique2 <- unique(ibsDF$site2)
+
+for (l in 1:length(unique1)) {
+  site1 <- unique1[l]
+  for (j in 1:length(unique2)) {
+    site2 <- unique2[j]
+    
+    if (site1 == site2 | site2 == site1) {
+      datSet = NULL
+      ibsDF_filt <- rbind(ibsDF_filt, datSet)
+    } else if (paste0(site1,"-",site2) %in% processed_pairs | paste0(site2,"-",site1) %in% processed_pairs) {
+      datSet = NULL
+      ibsDF_filt <- rbind(ibsDF_filt, datSet)
+    } else {
+      datSet = ibsDF[which(ibsDF$site1 == site1 & ibsDF$site2 == site2 | ibsDF$site1 == site2 & ibsDF$site2 == site1),]
+      datSet = datSet[which(datSet$site1 == site1 & datSet$site2 == site2),]
+      ibsDF_filt <- rbind(ibsDF_filt, datSet)
+    }
+    processed_pairs = c(processed_pairs, paste0(site1,"-",site2), paste0(site2,"-",site1))
+  }
+}
+
+ibsDF <- data.table(ibsDF_filt)
+```
+
+```{r echo=FALSE,message=FALSE, warning=FALSE, fig.width=12,fig.height=10}
+# Setting melted dataframe to the summ_ibsDF variable
+summ_ibsDF <- ibsDF
+summ_ibsDF <- summ_ibsDF[which(summ_ibsDF$value >= 0.5),]
+
+# Create two groups from the IBS table
+# Filtration of .50 group
+summ_ibsDF_5 = summ_ibsDF[which(summ_ibsDF$value >= 0.5 & summ_ibsDF$value < 0.75),]
+
+## summarising the dataframe to get the mean and median for all unique location pairs.
+##  
+Main_Connectness_05 <-  summ_ibsDF_5 %>%
+  group_by(site1,site2) %>%
+  dplyr::summarise(mean_IBS = mean(value),
+            median_IBS = median(value)) %>%
+  mutate(pair_location = paste(site1,site2, sep = "-"))
+
+### add the longitude and latitude for both locations
+Main_Connectness_05 <- Main_Connectness_05 %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat1 = lat, Long1 = long,), by = c("site1" = "Location")) %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat2 = lat, Long2 = long), by = c("site2" = "Location"))  
+
+
+IBS_pair_count <- summ_ibsDF_5 %>%
+  group_by(site1, site2) %>%
+  dplyr::summarise(pair_count = n(),
+            pair_perc = round (pair_count/ nrow(summ_ibsDF_5) * 100,1)) %>% arrange(desc(pair_count)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-")) %>%
+  group_by(pair_location)
+
+## create sf objects for the points on the map
+longlatSf <- st_as_sf(nig_LongLat, coords = c("long", "lat"), crs = st_crs(mapNGA))
+
+## combine the paired location data
+Main_Connectness_05 <- Main_Connectness_05 %>% left_join(IBS_pair_count, by = "pair_location")
+
+### Connection plot 1
+ggplot() +
+  geom_sf(data = mapNGA,  fill = "white", color = "#2E8B57") +
+  geom_sf(data = longlatSf, color = "red",aes(size = 3)) +
+  geom_curve(data = Main_Connectness_05, aes(x = Long1, 
+                                          y = Lat1, 
+                                          xend = Long2, 
+                                          yend = Lat2,
+                                          color = pair_perc,
+                                          linewidth = pair_count),
+             curvature = -0.5) +
+  geom_label_repel(data = nig_LongLat,
+                    aes(label =  Location ,x = long, y = lat ), 
+                    color = 'black',
+                    size = 2,
+                    box.padding = unit(1, "lines"),
+                    segment.color = '#132B43',
+                    angle = 45,
+                    max.overlaps = 40
+  ) +
+  scale_linewidth_continuous(range = c(0, 3),name = "Pair Count")  +
+  scale_color_gradient(high = "#FF0000", low = "#FF7878",name = "Percentage Gradient", limits = c(0,16))  +
+  labs(x = NULL, y = NULL) +
+  theme_void() +
+  theme(panel.background = element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        legend.position = "bottom",
+        legend.spacing.x = unit(0.5, "cm"),
+        strip.text = element_text(size = 12)) +
+  guides(size = "none") +
+  ggtitle("Nigerian Samples >= 0.50 & < .75 IBS Value") + theme(plot.title = element_text(hjust = 0.5))
+```
+```{r echo=FALSE,message=FALSE, warning=FALSE, fig.width=12,fig.height=10}
+#################### 2nd Grouping ####################
+# Second filtration of .75 group
+summ_ibsDF_75 = summ_ibsDF[which(summ_ibsDF$value >= 0.75),]
+
+## summarising the dataframe to get the mean and median for all unique location pairs.
+Main_Connectness_75 <- summ_ibsDF_75 %>%
+group_by(site1,site2) %>%
+dplyr::summarise(mean_IBS = mean(value),
+          median_IBS = median(value)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-"))
+
+### add the longitude and latitude for both locations
+Main_Connectness_75 <- Main_Connectness_75 %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat1 = lat, Long1 = long,), by = c("site1" = "Location")) %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat2 = lat, Long2 = long), by = c("site2" = "Location"))  
+
+## Do a count for sample pairs coming from each location pair and get the proportion. 836682 = total overal sample pairs
+IBS_pair_count <- summ_ibsDF_75 %>% 
+  group_by(site1,site2) %>%
+  dplyr::summarise(pair_count = n(),
+            pair_perc = round (pair_count/ nrow(summ_ibsDF_75) * 100,1)) %>% arrange(desc(pair_count)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-")) %>% 
+  group_by(pair_location)
+
+## create sf objects for the points on the map
+longlatSf <- st_as_sf(nig_LongLat, coords = c("long", "lat"), crs = st_crs(mapNGA))
+
+## combine the paired location data
+Main_Connectness_75 <- Main_Connectness_75 %>% left_join(IBS_pair_count, by = "pair_location")
+
+### Connection plot 1
+ggplot() +
+  geom_sf(data = mapNGA,  fill = "white", color = "#2E8B57") +
+  geom_sf(data = longlatSf, color = "red",aes(size = 3)) +
+  geom_curve(data = Main_Connectness_75, aes(x = Long1, 
+                                          y = Lat1, 
+                                          xend = Long2, 
+                                          yend = Lat2,
+                                          color = pair_perc,
+                                          linewidth = pair_count),
+             curvature = -0.5) + geom_label_repel( data =  nig_LongLat,
+                    aes(label =  Location ,x = long, y = lat ), 
+                    color = 'black',
+                    size = 2,
+                    box.padding = unit(1, "lines"),
+                    segment.color = '#132B43',
+                    angle = 45,
+                    max.overlaps = 40) +
+  scale_linewidth_continuous(range = c(0, 3),name = "Pair Count")  +
+  scale_color_gradient(high = "#FF0000", low = "#FF7878",name = "Percentage Gradient", limits = c(0,30))  +
+  labs(x = NULL, y = NULL) +
+  theme_void() +
+  theme(panel.background = element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        legend.position = "bottom",
+        legend.spacing.x = unit(0.5, "cm"),
+        strip.text = element_text(size = 12)) +
+  guides(size = "none") +
+  ggtitle("Nigerian Samples >= 0.75 IBS Value") + theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r echo=FALSE,message=FALSE, warning=FALSE, fig.width=12,fig.height=10}
+# Group Resistant vs Resistant; this should be after the duplicates have been removed
+ibsDF_resist = ibsDF
+m3 = match(ibsDF_resist$Var1, ibsDF_metadata$samples)
+m4 = match(ibsDF_resist$Var2, ibsDF_metadata$samples)
+ibsDF_resist$condition1="";ibsDF_resist$condition2="";
+ibsDF_resist$condition1 = ibsDF_metadata$Chloroquine[m3]
+ibsDF_resist$condition2 = ibsDF_metadata$Chloroquine[m4]
+
+# Group Resistant vs Resistant;
+ibsDF_resists = ibsDF_resist[which(ibsDF_resist$condition1 == "Resistant" & ibsDF_resist$condition2 == "Resistant"),]
+ibsDF_resists = ibsDF_resists[which(ibsDF_resists$value >= 0.5),]
+# Create two groups from the IBS table
+# Filtration of .50 group
+# Didn't do the Filtration because only one sample was > .75
+ibsDF_resists_5 = ibsDF_resists[which(ibsDF_resists$value >= 0.5 & ibsDF_resists$value < 0.75),]
+
+resist_connectness <- ibsDF_resists %>%
+  group_by(site1,site2) %>%
+  dplyr::summarise(mean_IBS = mean(value),
+            median_IBS = median(value)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-"))
+
+### add the longitude and latitude for both locations
+resist_connectness <- resist_connectness %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat1 = lat, Long1 = long,), by = c("site1" = "Location")) %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat2 = lat, Long2 = long), by = c("site2" = "Location"))  
+
+ibsResist_pairCount <- ibsDF_resists %>%
+  group_by(site1, site2) %>%
+  dplyr::summarise(pair_count = n(),
+            pair_perc = round (pair_count/ nrow(ibsDF_resists) * 100,1)) %>% arrange(desc(pair_count)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-")) %>%
+  group_by(pair_location)
+
+## create sf objects for the points on the map
+longlatSf <- st_as_sf(nig_LongLat, coords = c("long", "lat"), crs = st_crs(mapNGA))
+
+## combine the paired location data
+resist_connectness <- resist_connectness %>% left_join(ibsResist_pairCount, by = "pair_location")
+
+### Connection plot 1
+ggplot() +
+  geom_sf(data = mapNGA,  fill = "white", color = "#2E8B57") +
+  geom_sf(data = longlatSf, color = "red",aes(size = 3)) +
+  geom_curve(data = resist_connectness, aes(x = Long1, 
+                                             y = Lat1, 
+                                             xend = Long2, 
+                                             yend = Lat2,
+                                             color = pair_perc,
+                                             linewidth = pair_count),
+             curvature = -0.5) +
+  geom_label_repel(data = nig_LongLat,
+                   aes(label =  Location ,x = long, y = lat ), 
+                   color = 'black',
+                   size = 2,
+                   box.padding = unit(1, "lines"),
+                   segment.color = '#132B43',
+                   angle = 45,
+                   max.overlaps = 40
+  ) +
+  scale_linewidth_continuous(range = c(0, 3),name = "Pair Count")  +
+  scale_color_gradient(high = "#FF0000", low = "#FF7878",name = "Percentage Gradient", limits = c(0,17)) +
+  labs(x = NULL, y = NULL) +
+  theme_void() +
+  theme(panel.background = element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        legend.position = "bottom",
+        legend.spacing.x = unit(0.5, "cm"),
+        strip.text = element_text(size = 12)) +
+  guides(size = "none") +
+  ggtitle("Nigeria Resistant IBS Value") + theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r echo=FALSE,message=FALSE, warning=FALSE, fig.width=12,fig.height=10}
+# Different Groupings
+  # >0.5 AND <0.75
+ibsDF_resists_5 = ibsDF_resists[which(ibsDF_resists$value >= 0.5 & ibsDF_resists$value < 0.75),]
+
+resist_connectness_5 <- ibsDF_resists_5 %>%
+  group_by(site1,site2) %>%
+  dplyr::summarise(mean_IBS = mean(value),
+                   median_IBS = median(value)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-"))
+
+### add the longitude and latitude for both locations
+resist_connectness_5 <- resist_connectness_5 %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat1 = lat, Long1 = long,), by = c("site1" = "Location")) %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat2 = lat, Long2 = long), by = c("site2" = "Location"))  
+
+ibsResist_pairCount_5 <- ibsDF_resists_5 %>%
+  group_by(site1, site2) %>%
+  dplyr::summarise(pair_count = n(),
+                   pair_perc = round (pair_count/ nrow(ibsDF_resists_5) * 100,1)) %>% arrange(desc(pair_count)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-")) %>%
+  group_by(pair_location)
+
+## combine the paired location data
+resist_connectness_5 <- resist_connectness_5 %>% left_join(ibsResist_pairCount_5, by = "pair_location")
+
+### Connection plot 1
+ggplot() +
+  geom_sf(data = mapNGA,  fill = "white", color = "#2E8B57") +
+  geom_sf(data = longlatSf, color = "red",aes(size = 3)) +
+  geom_curve(data = resist_connectness_5, aes(x = Long1, 
+                                            y = Lat1, 
+                                            xend = Long2, 
+                                            yend = Lat2,
+                                            color = pair_perc,
+                                            linewidth = pair_count),
+             curvature = -0.5) +
+  geom_label_repel(data = nig_LongLat,
+                   aes(label =  Location ,x = long, y = lat ), 
+                   color = 'black',
+                   size = 2,
+                   box.padding = unit(1, "lines"),
+                   segment.color = '#132B43',
+                   angle = 45,
+                   max.overlaps = 40
+  ) +
+  scale_linewidth_continuous(range = c(0, 3),name = "Pair Count")  +
+  scale_color_gradient(high = "#FF0000", low = "#FF7878",name = "Percentage Gradient", limits = c(0,17)) +
+  labs(x = NULL, y = NULL) +
+  theme_void() +
+  theme(panel.background = element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        legend.position = "bottom",
+        legend.spacing.x = unit(0.5, "cm"),
+        strip.text = element_text(size = 12)) +
+  guides(size = "none") +
+  ggtitle("Nigeria Resistant Samples >= 0.50 & < .75 IBS Value") + theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r echo=FALSE,message=FALSE, warning=FALSE, fig.width=12,fig.height=10}
+#>=0.75
+ibsDF_resists_75 = ibsDF_resists[which(ibsDF_resists$value >= 0.75),]
+
+resist_connectness_75 <- ibsDF_resists_75 %>%
+  group_by(site1,site2) %>%
+  dplyr::summarise(mean_IBS = mean(value),
+                   median_IBS = median(value)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-"))
+
+### add the longitude and latitude for both locations
+resist_connectness_75 <- resist_connectness_75 %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat1 = lat, Long1 = long,), by = c("site1" = "Location")) %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat2 = lat, Long2 = long), by = c("site2" = "Location"))  
+
+ibsResist_pairCount_75 <- ibsDF_resists_75 %>%
+  group_by(site1, site2) %>%
+  dplyr::summarise(pair_count = n(),
+                   pair_perc = round (pair_count/ nrow(ibsDF_resists_75) * 100,1)) %>% arrange(desc(pair_count)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-")) %>%
+  group_by(pair_location)
+
+## combine the paired location data
+resist_connectness_75 <- resist_connectness_75 %>% left_join(ibsResist_pairCount_75, by = "pair_location")
+
+### Connection plot 1
+ggplot() +
+  geom_sf(data = mapNGA,  fill = "white", color = "#2E8B57") +
+  geom_sf(data = longlatSf, color = "red",aes(size = 3)) +
+  geom_curve(data = resist_connectness_75, aes(x = Long1, 
+                                              y = Lat1, 
+                                              xend = Long2, 
+                                              yend = Lat2,
+                                              color = pair_perc,
+                                              linewidth = pair_count),
+             curvature = -0.5) +
+  geom_label_repel(data = nig_LongLat,
+                   aes(label =  Location ,x = long, y = lat ), 
+                   color = 'black',
+                   size = 2,
+                   box.padding = unit(1, "lines"),
+                   segment.color = '#132B43',
+                   angle = 45,
+                   max.overlaps = 40
+  ) +
+  scale_linewidth_continuous(range = c(0, 3),name = "Pair Count")  +
+  scale_color_gradient(high = "#FF0000", low = "#FF7878",name = "Percentage Gradient", limits = c(0,18)) +
+  # scale_color_gradient(high = "#132B43", low = "#56B1F7",name = "Percentage Gradient", limits = c(0,65))  +
+  labs(x = NULL, y = NULL) +
+  theme_void() +
+  theme(panel.background = element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        legend.position = "bottom",
+        legend.spacing.x = unit(0.5, "cm"),
+        strip.text = element_text(size = 12)) +
+  guides(size = "none") +
+  ggtitle("Nigeria Resistant Samples >= .75 IBS Value") + theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r echo=FALSE,message=FALSE, warning=FALSE, fig.width=12,fig.height=10}
+# Group Resistant vs Sensitive
+ibsDF_sensits = ibsDF_resist[which(ibsDF_resist$condition1 == "Sensitive" & ibsDF_resist$condition2 == "Sensitive"),]
+ibsDF_sensits = ibsDF_sensits[which(ibsDF_sensits$value >= 0.5),]
+
+sensits_connectness <- ibsDF_sensits %>%
+  group_by(site1,site2) %>%
+  dplyr::summarise(mean_IBS = mean(value),
+                   median_IBS = median(value)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-"))
+
+### add the longitude and latitude for both locations
+sensits_connectness <- sensits_connectness %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat1 = lat, Long1 = long,), by = c("site1" = "Location")) %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat2 = lat, Long2 = long), by = c("site2" = "Location"))  
+
+ibsSensits_pairCount <- ibsDF_sensits %>%
+  group_by(site1, site2) %>%
+  dplyr::summarise(pair_count = n(),
+                   pair_perc = round (pair_count/ nrow(ibsDF_sensits) * 100,1)) %>% arrange(desc(pair_count)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-")) %>%
+  group_by(pair_location)
+
+# create sf objects for the points on the map
+longlatSf <- st_as_sf(nig_LongLat, coords = c("long", "lat"), crs = st_crs(mapNGA))
+
+## combine the paired location data
+sensits_connectness <- sensits_connectness %>% left_join(ibsSensits_pairCount, by = "pair_location")
+
+### Connection plot 1
+ggplot() +
+  geom_sf(data = mapNGA,  fill = "white", color = "#2E8B57") +
+  geom_sf(data = longlatSf, color = "red",aes(size = 3)) +
+  geom_curve(data = sensits_connectness, aes(x = Long1, 
+                                            y = Lat1, 
+                                            xend = Long2, 
+                                            yend = Lat2,
+                                            color = pair_perc,
+                                            linewidth = pair_count),
+             curvature = -0.5) +
+  geom_label_repel(data = nig_LongLat,
+                   aes(label =  Location ,x = long, y = lat ), 
+                   color = 'black',
+                   size = 2,
+                   box.padding = unit(1, "lines"),
+                   segment.color = '#132B43',
+                   angle = 45,
+                   max.overlaps = 40
+  ) +
+  scale_linewidth_continuous(range = c(0, 3),name = "Pair Count")  +
+  scale_color_gradient(high = "#FF0000", low = "#FF7878",name = "Percentage Gradient", limits = c(0,15)) + 
+  # scale_color_gradient(high = "#132B43", low = "#56B1F7", name = "Percentage Gradient", limits = c(0,15))  +
+  labs(x = NULL, y = NULL) +
+  theme_void() +
+  theme(panel.background = element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        legend.position = "bottom",
+        legend.spacing.x = unit(0.5, "cm"),
+        strip.text = element_text(size = 12)) +
+  guides(size = "none") +
+  ggtitle("Nigeria Sensitive IBS Value") + theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r echo=FALSE,message=FALSE, warning=FALSE, fig.width=12,fig.height=10}
+# Less than .75 IBS Value
+ibsDF_sensits_5 = ibsDF_sensits[which(ibsDF_sensits$value >= 0.5 & ibsDF_sensits$value < 0.75),]
+
+sensits_connectness_5 <- ibsDF_sensits_5 %>%
+  group_by(site1,site2) %>%
+  dplyr::summarise(mean_IBS = mean(value),
+                   median_IBS = median(value)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-"))
+
+### add the longitude and latitude for both locations
+sensits_connectness_5 <- sensits_connectness_5 %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat1 = lat, Long1 = long,), by = c("site1" = "Location")) %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat2 = lat, Long2 = long), by = c("site2" = "Location"))  
+
+ibsSensits_pairCount_5 <- ibsDF_sensits_5 %>%
+  group_by(site1, site2) %>%
+  dplyr::summarise(pair_count = n(),
+                   pair_perc = round (pair_count/ nrow(ibsDF_sensits_5) * 100,1)) %>% arrange(desc(pair_count)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-")) %>%
+  group_by(pair_location)
+
+# create sf objects for the points on the map
+longlatSf <- st_as_sf(nig_LongLat, coords = c("long", "lat"), crs = st_crs(mapNGA))
+
+## combine the paired location data
+sensits_connectness_5 <- sensits_connectness_5 %>% left_join(ibsSensits_pairCount_5, by = "pair_location")
+
+### Connection plot 1
+ggplot() +
+  geom_sf(data = mapNGA,  fill = "white", color = "#2E8B57") +
+  geom_sf(data = longlatSf, color = "red",aes(size = 3)) +
+  geom_curve(data = sensits_connectness_5, aes(x = Long1, 
+                                             y = Lat1, 
+                                             xend = Long2, 
+                                             yend = Lat2,
+                                             color = pair_perc,
+                                             linewidth = pair_count),
+             curvature = -0.5) +
+  geom_label_repel(data = nig_LongLat,
+                   aes(label =  Location ,x = long, y = lat ), 
+                   color = 'black',
+                   size = 2,
+                   box.padding = unit(1, "lines"),
+                   segment.color = '#132B43',
+                   angle = 45,
+                   max.overlaps = 40
+  ) +
+  scale_linewidth_continuous(range = c(0, 3),name = "Pair Count")  +
+  scale_color_gradient(high = "#FF0000", low = "#FF7878",name = "Percentage Gradient", limits = c(0,15)) +
+  # scale_color_gradient(high = "#132B43", low = "#56B1F7",name = "Percentage Gradient", limits = c(0,15))  +
+  labs(x = NULL, y = NULL) +
+  theme_void() +
+  theme(panel.background = element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        legend.position = "bottom",
+        legend.spacing.x = unit(0.5, "cm"),
+        strip.text = element_text(size = 12)) +
+  guides(size = "none") +
+  ggtitle("Nigeria Sensitive >=0.5 & <0.75 IBS Value") + theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r echo=FALSE,message=FALSE, warning=FALSE, fig.width=12,fig.height=10}
+# Greater than .75 IBS Value
+ibsDF_sensits_75 = ibsDF_sensits[which(ibsDF_sensits$value >= 0.75),]
+
+sensits_connectness_75 <- ibsDF_sensits_75 %>%
+  group_by(site1,site2) %>%
+  dplyr::summarise(mean_IBS = mean(value),
+                   median_IBS = median(value)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-"))
+
+### add the longitude and latitude for both locations
+sensits_connectness_75 <- sensits_connectness_75 %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat1 = lat, Long1 = long,), by = c("site1" = "Location")) %>%
+  left_join(nig_LongLat %>% dplyr::select(Location, Lat2 = lat, Long2 = long), by = c("site2" = "Location"))  
+
+ibsSensits_pairCount_75 <- ibsDF_sensits_75 %>%
+  group_by(site1, site2) %>%
+  dplyr::summarise(pair_count = n(),
+                   pair_perc = round (pair_count/ nrow(ibsDF_sensits_75) * 100,1)) %>% arrange(desc(pair_count)) %>%
+  mutate(pair_location = paste(site1, site2, sep = "-")) %>%
+  group_by(pair_location)
+
+# create sf objects for the points on the map
+longlatSf <- st_as_sf(nig_LongLat, coords = c("long", "lat"), crs = st_crs(mapNGA))
+
+## combine the paired location data
+sensits_connectness_75 <- sensits_connectness_75 %>% left_join(ibsSensits_pairCount_75, by = "pair_location")
+
+### Connection plot 1
+ggplot() +
+  geom_sf(data = mapNGA,  fill = "white", color = "#2E8B57") +
+  geom_sf(data = longlatSf, color = "red",aes(size = 3)) +
+  geom_curve(data = sensits_connectness_75, aes(x = Long1, 
+                                             y = Lat1, 
+                                             xend = Long2, 
+                                             yend = Lat2,
+                                             color = pair_perc,
+                                             linewidth = pair_count),
+             curvature = -0.5) +
+  geom_label_repel(data = nig_LongLat,
+                   aes(label =  Location ,x = long, y = lat ), 
+                   color = 'black',
+                   size = 2,
+                   box.padding = unit(1, "lines"),
+                   segment.color = '#132B43',
+                   angle = 45,
+                   max.overlaps = 40
+  ) +
+  scale_linewidth_continuous(range = c(0, 3),name = "Pair Count")  +
+  scale_color_gradient(high = "#FF0000", low = "#FF7878",name = "Percentage Gradient", limits = c(0,20)) +
+  # scale_color_gradient(high = "#132B43", low = "#56B1F7",name = "Percentage Gradient", limits = c(0,17))  +
+  labs(x = NULL, y = NULL) +
+  theme_void() +
+  theme(panel.background = element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        legend.position = "bottom",
+        legend.spacing.x = unit(0.5, "cm"),
+        strip.text = element_text(size = 12)) +
+  guides(size = "none") +
+  ggtitle("Nigeria Sensitive >=0.75 IBS Value") + theme(plot.title = element_text(hjust = 0.5))
+```
+#### Network Plots showing the different pairs
+Network plot using the Fruchterman-Reingold force-directed algorithm (FR) layout
+```{r echo=FALSE,message=FALSE, warning=FALSE, fig.width=12,fig.height=10}
+####### NETWORK PLOT ######
+library(igraph)
+library(edgebundleR)
+
+# igraph_ibsDF <- ibsDF_cleaned[ibsDF_cleaned$value >= .9,]
+igraph_ibsDF <- summ_ibsDF
+igraph_ibsDF <- igraph_ibsDF[,c(1:3)]
+igraph_ibsDF <- igraph_ibsDF[igraph_ibsDF$value >= .75,]
+
+igraph_ibsDF_metadata <- ibsDF_metadata[,c(2,1,4)]
+
+g2=graph_from_data_frame(d=igraph_ibsDF,vertices = igraph_ibsDF_metadata, directed = F)
+
+vcol=V(g2)$Location
+vcol[vcol=="Abuja"]="#0d1137"
+vcol[vcol=="Adamawa"]="#d72613"
+vcol[vcol=="Calabar"]="#077b8a"
+vcol[vcol=="Delta"]="#5c3c92"
+vcol[vcol=="Edo"]="#801818"
+vcol[vcol=="Ibadan"]="#e2d810"
+vcol[vcol=="Kano"]="#12a4d9"
+vcol[vcol=="Kebbi"]="#A25B5B"
+vcol[vcol=="Lagos_Ijede"]="#6b7c8c"
+vcol[vcol=="Lautech_Ogbomosho"]="#ff6c40"
+vcol[vcol=="Ogun"]="#000075"
+vcol[vcol=="Osun"]="#c4a35a"
+vcol[vcol=="Owo"]="#12e761"
+V(g2)$color=vcol
+
+vcol1 = V(g2)$Chloroquine           
+vcol1[vcol1=="Sensitive"]="red"
+vcol1[vcol1=="Resistant"]="blue"
+vcol1[vcol1=="Mixed Resistant"]="green" 
+vcol1[vcol1=="Mixed Sensitive"]="black"
+V(g2)$resistance=vcol1
+
+#11. drawing the graph
+# ibs_Fruchterman-Reingold(fr)NetworkPlot_70Filt
+# pdf("Results_2/ibs_frNetworkPlot_70Filt.pdf", width = 12)
+plot(g2, vertex.label.color="black",vertex.label=NA, vertex.color=V(g2)$color,main = "IBS Network Plot",
+     vertex.label.cex=.5,edge.curved=0.5,layout=layout_with_fr,
+     vertex.size=4, edge.arrow.mode=0,edge.color=V(g2)$resistance)
+legend("topright", legend = c("Abuja", "Adamawa", "Calabar", "Delta","Edo","Ibadan", "Kano","Kebbi","Lagos_Ijede","Lautech_Ogbomosho", "Ogun", "Osun", "Owo"), pch=21,
+       col= c("#0d1137","#d72613","#077b8a","#5c3c92","#801818","#e2d810","#12a4d9","#A25B5B", "#6b7c8c","#ff6c40","#000075","#c4a35a","#12e761")
+       , pt.bg= c("#0d1137","#d72613","#077b8a","#5c3c92","#801818","#e2d810","#12a4d9","#A25B5B", "#6b7c8c","#ff6c40","#000075","#c4a35a","#12e761"),
+       pt.cex=1, cex=.4, bty="n", ncol=1, horiz = F)
+legend("bottomright", legend = c("Sensitive","Resistant","Mixed Resistant", "Mixed Sensitive"), pch=15,
+       col=c("red","blue","green","black"), pt.bg=c("red","blue","green","black"),
+       pt.cex=1, cex=.4, bty="n", ncol=1, horiz = F)
+```
+Network plot using the Circle layout - layout that places the vertices on a circle
+```{r echo=FALSE,message=FALSE, warning=FALSE, fig.width=12,fig.height=10}
+plot(g2, vertex.label.color="black",vertex.label=NA, vertex.color=V(g2)$color,main = "IBS Network Plot",
+     vertex.label.cex=.5,edge.curved=0.5,layout=layout_in_circle,
+     vertex.size=4, edge.arrow.mode=0,edge.color=V(g2)$resistance)
+legend("topright", legend = c("Abuja", "Adamawa", "Calabar", "Delta","Edo","Ibadan", "Kano","Kebbi","Lagos_Ijede","Lautech_Ogbomosho", "Ogun", "Osun", "Owo"), pch=21,
+       col= c("#0d1137","#d72613","#077b8a","#5c3c92","#801818","#e2d810","#12a4d9","#A25B5B", "#6b7c8c","#ff6c40","#000075","#c4a35a","#12e761")
+       , pt.bg= c("#0d1137","#d72613","#077b8a","#5c3c92","#801818","#e2d810","#12a4d9","#A25B5B", "#6b7c8c","#ff6c40","#000075","#c4a35a","#12e761"),
+       pt.cex=1, cex=.4, bty="n", ncol=1, horiz = F)
+legend("bottomright", legend = c("Sensitive","Resistant","Mixed Resistant", "Mixed Sensitive"), pch=15,
+       col=c("red","blue","green","black"), pt.bg=c("red","blue","green","black"),
+       pt.cex=1, cex=.4, bty="n", ncol=1, horiz = F)
+```
+
+Network plot using the Kamada-Kawai force-directed algorithm (KK) layout
+```{r echo=FALSE,message=FALSE, warning=FALSE, fig.width=12,fig.height=10}
+plot(g2, vertex.label.color="black",vertex.label=NA, vertex.color=V(g2)$color,main = "IBS Network Plot",
+     vertex.label.cex=.5,edge.curved=0.5,layout=layout_with_kk,
+     vertex.size=4, edge.arrow.mode=0,edge.color=V(g2)$resistance)
+legend("topright", legend = c("Abuja", "Adamawa", "Calabar", "Delta","Edo","Ibadan", "Kano","Kebbi","Lagos_Ijede","Lautech_Ogbomosho", "Ogun", "Osun", "Owo"), pch=21,
+       col= c("#0d1137","#d72613","#077b8a","#5c3c92","#801818","#e2d810","#12a4d9","#A25B5B", "#6b7c8c","#ff6c40","#000075","#c4a35a","#12e761")
+       , pt.bg= c("#0d1137","#d72613","#077b8a","#5c3c92","#801818","#e2d810","#12a4d9","#A25B5B", "#6b7c8c","#ff6c40","#000075","#c4a35a","#12e761"),
+       pt.cex=1, cex=.4, bty="n", ncol=1, horiz = F)
+legend("bottomright", legend = c("Sensitive","Resistant","Mixed Resistant", "Mixed Sensitive"), pch=15,
+       col=c("red","blue","green","black"), pt.bg=c("red","blue","green","black"),
+       pt.cex=1, cex=.4, bty="n", ncol=1, horiz = F)
+```
+
+Presented igraph output using the edgebundle package
+```{r echo=FALSE,message=FALSE, warning=FALSE, fig.width=12,fig.height=10}
+edgebundle(g2, tension = 0.7)->eb
+eb
+# legend("topright", legend = c("Abuja", "Adamawa", "Calabar", "Delta","Edo","Ibadan", "Kano","Kebbi","Lagos_Ijede","Lautech_Ogbomosho", "Ogun", "Osun", "Owo"), pch=21,
+#        col= c("#0d1137","#d72613","#077b8a","#5c3c92","#801818","#e2d810","#12a4d9","#A25B5B", "#6b7c8c","#ff6c40","#000075","#c4a35a","#12e761")
+#        , pt.bg= c("#0d1137","#d72613","#077b8a","#5c3c92","#801818","#e2d810","#12a4d9","#A25B5B", "#6b7c8c","#ff6c40","#000075","#c4a35a","#12e761"),
+#        pt.cex=1, cex=.4, bty="n", ncol=1, horiz = F)
+# saveEdgebundle(eb,"Results_2/Nigerian_samplesNetworkPlot.html", selfcontained = TRUE)
+
+```
+
+
+#### Phylogeny Tree
+```{r echo=FALSE,message=FALSE, warning=FALSE, fig.width=12,fig.height=10}
+# Using GGTREE TO GENERATE NETWORK TREES
+library(ggtree)
+library(adegenet)
+library(poppr)
+library(ape)
+library(ctc)
+library(treeio)
+# newick_newDF <- newDF_II
+# dfNames <- gsub("v3.","v3_",names(newick_newDF))
+# names(newick_newDF) <- dfNames
+# 
+# distancCalc <- df2genind(newick_newDF,ploidy = 2, ncode = 1)
+# (nan9   <- popsub(distancCalc))
+# (neinan <- nei.dist(nan9))
+# 
+# distanceCalc_hclust <- hclust(neinan, method = "complete", members = NULL)
+# 
+# write(hc2Newick(distanceCalc_hclust), file="Results_3/chloroquine_allSamples_barcodeDistCalc.newick")
+
+tree <- read.tree("Results_3/chloroquine_allSamples_barcodeDistCalc.newick")
+
+# Create meta_data for the newick_DF
+newickDF_metadata <- nig_filtData1 %>% dplyr::select(SampleId,Year,Location,Chloroquine)
+newickDF_metadata <- newickDF_metadata[which(newickDF_metadata$SampleId %in% rownames(newDF_II)),]
+
+## Change location_data into a list of location names and their samples
+## Then use to group the tree
+group_list <- split(newickDF_metadata$SampleId, newickDF_metadata$Location, newickDF_metadata$color)
+grouped_tree <- groupOTU(tree, group_list)
+
+## there are 2 approaches to creating annotations for the tree:
+## Either you add the location data to the tree using this symbols %<+% and then pass the column names as aesthetic
+## Or you combine the location list with the tree using the groupOTU funtion
+site = c(Abuja="#0d1137",Adamawa="#d72613",Calabar="#077b8a",Delta="#5c3c92", Edo= "#801818",Ibadan="#e2d810",Kano="#12a4d9",Kebbi="#A25B5B",Lagos_Ijede="#6b7c8c",Lautech_Ogbomosho="#ff6c40",Ogun="#000075",Osun="#c4a35a",Owo="#12e761")
+# pdf('Results_2/phylogenyTree_Unrooted.pdf', width = 12)
+ggtree(grouped_tree,layout="unrooted",branch.length = 'none', aes(color=Location))  %<+%  newickDF_metadata +
+  # geom_tiplab(size=2) +
+  geom_tippoint(aes(shape=Chloroquine, color=Location)) +
+  scale_color_manual(values = site) +
+  theme(legend.position = "right") +
+  guides(color = guide_legend(override.aes = list(shape = 15))) +
+  labs(color = "Location", shape = "Drug Status")
+# dev.off()
+
+```
+

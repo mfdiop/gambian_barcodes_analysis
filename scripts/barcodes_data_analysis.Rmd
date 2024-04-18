@@ -1,0 +1,962 @@
+---
+title: "Transmission analysis using 101 SNPs barcode data"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+# date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+# header-includes:
+#   - \usepackage{pdflscape}
+   # html_document:
+   #    toc:true
+   #    toc_float:true
+   # pdf_document:
+   #    toc:true
+   #    toc_float:true
+---
+
+```{r setup, include=FALSE}
+# https://rmarkdown.rstudio.com/lesson-1.html
+# https://bookdown.org/yihui/rmarkdown-cookbook/
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, 
+                      comment = FALSE, dev = 'pdf', fig.align = 'center')
+
+# Install and load necessary packages
+if (!requireNamespace("spdep", quietly = TRUE)) install.packages("spdep")
+
+library(tidyverse)
+library(patchwork)
+library(sf)
+library(tinytex)
+library(tmap)
+library(flextable)
+library(RColorBrewer)
+library(igraph)
+library(sfdep)
+library(spdep)
+library(pheatmap)
+library(sp)
+library(UpSetR)
+library(glue)
+
+color_bar <- c('#00ff00', '#33FFFF', 'brown', "#0099FF", "magenta", "black", 
+               "orange", "#1f9463", "#ff0000", "#000099", "yellow", "skyblue")
+                        
+
+set.seed(27011988)
+
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+color_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+
+# Other solutions
+# color = grDevices::colors()[grep('gr(a|e)y', grDevices::colors(), invert = T)]
+# 
+# colorRampPalette(c("darkblue", "white","darkred"))( 54)
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+data <- readxl::read_excel("../data/FinalgambianDataset.xlsx", na = c("", "-")) %>% 
+    rename(sample_internal_id = `Sample Internal ID`, sample_external_id = `Sample External ID`, P23.BP = `P23:BP`) %>% 
+   select(-c("Country", "Study", "Chloroquine", "Sulfadoxine", "Mefloquine", "Pyrimethamine")) %>% 
+   filter(Species == "Pf" & !is.na(McCOIL)) %>% 
+   dplyr::filter(Location != "Nkakat Eyamba" & Location != "Ngayen Sanjal")
+
+nbre_samples <- data %>% 
+   pull(sample_internal_id) %>% 
+   length()
+
+nbre_snps <- nchar(data$Barcode[1])
+```
+
+# Data Source
+This analysis aims to use **`r nbre_snps`** SNPs barcode data and **`r nbre_samples`** isolates to explore Plasmodium *falciparum* drug resistance profile in the Gambia.
+
+# Analysis steps
+
+1. Genetic diversity analysis
+   - Allelic richness
+   - Mutations / Haplotypes Allele frequencies
+2. Transmission dynamics analysis
+   - Identity by state
+   - Jaccard Similarity Coefficient
+   - Sørensen-Dice Coefficient (Dice Similarity)
+   - Fst (Fixation Index)
+   - Nei's Genetic Distance (Nei 1972)
+3. Temporal dynamics analysis
+   - Temporal FST (Fixation Index)
+   - Haplotype Diversity Over Time
+   - Drug Resistance Analysis
+   
+### Distrubution of samples by Location and Year
+
+This subsection provides a comprehensive analysis of the distribution of **`r nbre_samples`** samples collected across **`r nbre_snps`** loci, categorized by their geographic locations and the year of collection. We aim to present an overview of the overall distribution of samples, followed by a more detailed examination of the sample density in specific locations over various years. This will highlight areas and periods of high sampling activity and identify potential gaps in the data collection efforts.
+
+```{r}
+location <- data %>% 
+   group_by(Location) %>% 
+   count()
+
+years <- data %>% 
+   group_by(Year) %>% 
+   count()
+```
+
+### Distrubution of samples after filtering
+
+This subsection delves into the distribution of our dataset following the application of rigorous filtering criteria, aimed at refining the quality and relevance of the **`r nbre_samples`** samples collected across **`r nbre_snps`** loci. The filtering process involves the exclusion of samples and loci with a high proportion of missing genotypes (>10%) to ensure the integrity and reliability of subsequent analyses.
+
+```{r}
+
+df <- read_delim("../data/barcode_gambia.tsv") %>% 
+   dplyr::filter(Location != "Nkakat Eyamba" & Location != "Ngayen Sanjal") %>% 
+   arrange(Year, Location)
+
+nbre_samples_filtered <- df %>% 
+   pull(sample_internal_id) %>% 
+   length()
+
+nbre_snps_filtered <- df %>% 
+   select(-c(1:5)) %>% 
+   ncol()
+
+location <- df %>% 
+   group_by(Location) %>% 
+   count()
+
+years <- df %>% 
+   group_by(Year) %>% 
+   count()
+```
+
+After a meticulous filtering process, our dataset now comprises **`r nbre_samples_filtered`** samples out of the original **`r nbre_samples`**, distributed across **`r nbre_snps_filtered`** loci, significantly refining our analysis pool. The filtering has not only rationalized the dataset for enhanced accuracy but also minimized potential noise, allowing for a more precise understanding of genetic diversity and other population genetic indices.
+
+\newpage
+## Genetic diversity analysis
+Assess the genetic diversity of Plasmodium *falciparum* across different villages and time points. This includes calculating measures such as allelic richness, and SNP frequencies.
+
+#### Allelic richness:
+Allelic richness is a measure of the number of alleles per locus in a given population, adjusted for the smallest sample size if there are varying sample sizes.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=18, fig.height=9}
+# Only run this chunk if you are loading a local shapefile
+shape.gmb <- sf::st_read( "../gis_coordinates/geoBoundaries-GMB-ADM3-all/geoBoundaries-GMB-ADM3_simplified.shp", 
+                          quiet = TRUE)
+
+# Load coordinates
+coordinates <- readxl::read_xlsx("../data/coordinates.xlsx", sheet = 2)
+
+# Load Allelic richness data
+al.richness.data <- readRDS("../genetic_diversity/allelic_richness.rds")
+
+# Extract mean population allelic richness
+mean.ar <- al.richness.data$allel.rich[[1]]$mean.richness
+
+ar.df <- data.frame(location = names(mean.ar), allelic_richness = mean.ar) %>% 
+   left_join(., coordinates, by = c("location" = "Locations")) %>% 
+   drop_na()
+
+df_sf <- st_as_sf(ar.df, coords = c("longitude", "latitude"), 
+                  crs = st_crs(shape.gmb), na.fail = FALSE, agr = "constant")
+
+# Plotting
+ggplot() +
+   geom_sf(data = shape.gmb, fill = "white", color="#132B43") + # Plot the base map
+   geom_sf(data = df_sf, aes(color = allelic_richness), size = 10) + # Plot allelic richness
+   scale_color_gradient(low = "yellow", high = "brown") + # Color gradient for allelic richness
+   labs(title = "Allelic Richness Distribution in the Gambia", 
+        color = "Allelic Richness") +
+   ggrepel::geom_label_repel(data = ar.df, aes(label = location, x = longitude, y = latitude), color = 'black', size = 6, box.padding = unit(1, "lines"), segment.color = '#132B43',  max.overlaps = Inf) +
+   theme_void() + 
+   theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20),
+         legend.title = element_text(face = "bold", size = 13),
+         legend.text = element_text(color = "#000000", size = 10))
+
+
+# joined_sf <- st_join(shape.gmb, df_sf, join = st_nearest_feature)
+# 
+# ggplot(joined_sf) +
+#    geom_sf(aes(fill = allelic_richness)) +
+#    scale_fill_gradient(low = "yellow", high = "brown") +
+#    labs(title = "Allelic Richness Distribution in the Gambia", color = "Allelic Richness") +
+#    theme_void() + 
+#    theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+#          legend.title = element_text(face = "bold", size = 10),
+#          legend.text = element_text(color = "#000000", size = 8))
+```
+
+\newpage
+## Transmission dynamics analysis
+This analysis focus on the identification of genetic clusters of P. *falciparum* using the refined dataset of **`r nbre_samples_filtered`** samples and **`r nbre_snps_filtered`** SNPs derived from post-filtering and methods like network analysis. By applying mathematical models and statistical techniques, we aim to unravel the patterns of genetic exchange between individuals at different locations and over time. This analysis sheds light on the mechanisms driving the spread of genetic variants, contributing to our understanding of population connectivity, dispersal pathways, and barriers to gene flow. Through the integration of geographic and temporal data, we identify hotspots of genetic diversity and areas of significant genetic differentiation, which may suggest historical events or ecological factors influencing transmission dynamics.
+
+We will create network plot from genetic similarity indices such as IBS, Jaccard Coefficient, Dice Similarity, Fst and Nei's Genetic Distance
+
+#### Identity by state (IBS):
+In the field of genetics, identity by state (IBS) refers to the case where two or more genetic sequences are identical because they share a common state, without necessarily deriving from a common ancestor. IBS plays a key role in understanding genetic similarity and diversity within populations, providing information about the genetic structure and relationships between individuals. This contrasts with identity by descent (IBD), where genetic similarities are due to inheritance from a common ancestor. Analyzing IBS across a dataset can illuminate patterns of genetic variation, contributing to the study of population genetics, and identification of potential genetic links in complex traits. IBS helps in quantifying the genetic similarity between pairs of samples based on SNP data, useful for identifying closely related Plasmodium strains or clones.
+
+```{r}
+
+genetic_similarity <- read_delim("../spatial_analysis/gambia_ibs.tsv") %>% 
+   as.matrix
+
+samples <- colnames(genetic_similarity)
+rownames(genetic_similarity) <- samples
+
+# Order data according to matrix
+data2 <- data[match(samples, data$sample_internal_id),]
+
+# ======= Annotations ======= 
+populations <- data2 %>% 
+   pull(Location) %>% 
+   unique() %>% 
+   sort()
+
+# Create a data frame for column annotation
+ann_df <- data.frame(Year = data2$Year, study_sites = data2$Location)
+row.names(ann_df) <- samples
+
+# location_df <- data.frame(study_sites = data$Location)
+# row.names(location_df) <- samples
+
+ann_colors <- list(
+   study_sites = c(Bansang="#7F00FF", Basse="#d72613", Brikama="#077b8a", Brikamaba="#5c3c92", 
+                   Fajikunda="#801818", Fatoto="#FFE500", Ijede="#12a4d9", Kafuta="#00FFFF",
+                   Kerewan="#ff6c40", Pirang="#000075", Sabi="#c4a35a", Soma="#12e761", 
+                   'Sotuma Sere'="#001AFF", Yerobawol="#FF004D"),
+   Year = brewer.pal(7, 'PuBu')
+)
+
+# colorRampPalette(brewer.pal(9, "Blues"))(15)
+# ============================ Base heatmap =======================
+heat_plot <- pheatmap::pheatmap(genetic_similarity, 
+                      col = brewer.pal(10, 'RdYlGn'), # choose a color scale for your data
+                      cluster_rows = TRUE, cluster_cols = TRUE, # set to FALSE if you want to remove the dendograms
+                      clustering_distance_cols = as.dist(1 - genetic_similarity), #'euclidean',
+                      clustering_distance_rows = as.dist(1 - genetic_similarity), #'euclidean',
+                      clustering_method = "complete", #'ward.D',
+                      # annotation_row = location_df, # row (location) annotations
+                      annotation_col = ann_df, # column (sample) annotations
+                      annotation_colors = ann_colors, # colors for your annotations
+                      annotation_names_row = FALSE, 
+                      annotation_names_col = FALSE,
+                      border_color = "black", # default is grey60
+                      number_color = "black",
+                      fontsize = 8,
+                      legend_breaks = c(0.1, 0.7, 0.9), # legend customization
+                      legend_labels = c("Low", "Medium", "High"), # legend customization
+                      show_colnames = FALSE, show_rownames = FALSE, # displaying column and row names
+                      main = "Pairwise similarity heatmap using IBS") # a title for our heatmap
+```
+
+#### Network Analysis:
+
+<!-- Network analysis involves representing the genetic similarities among samples as a network, where nodes represent samples and edges represent genetic links or similarities above a certain threshold. Samples that are closely connected (high degree, short path lengths) may indicate direct transmission or shared sources. -->
+Network analysis in genetic studies offers a powerful lens through which to explore the complex relationships and interactions among individuals or populations. By constructing networks that represent these connections, researchers can uncover underlying structures, identify key components or nodes, and understand the dynamics of genetic information flow. This approach facilitates the identification of clusters or communities within genetic data, revealing patterns of similarity, differentiation, or influence that might not be apparent through traditional analytical methods. In the context of this study, applying network analysis to the **`r nbre_samples_filtered`** samples and **`r nbre_snps_filtered`** SNPs can provide insights into the genetic landscape, highlighting potential pathways of gene transmission, genetic bottlenecks, or regions of high genetic diversity. This methodological perspective enriches our understanding of genetic relationships and contributes to a more nuanced view of population genetics.
+
+Let's create Network Plot using IBS metric:
+
+```{r, fig.width = 6, fig.height = 6}
+# Generate colors based on Location:
+colours <- c("#7F00FF", "#000000", "#077b8a", "#5c3c92", "#801818", "#FFE500", "#12a4d9",
+             "#00FFFF", "#ff6c40", "#000075", "#c4a35a", "#12e761", "#001AFF", "#FF004D")
+             
+names(colours) <- populations
+
+# ============================ Network plot =======================
+# Create a graph from the adjacency matrix
+g <- graph.adjacency(genetic_similarity, mode = "undirected", weighted = TRUE, diag = FALSE)
+
+# Set names and other attributes if necessary
+V(g)$name <- samples # Assuming row names are sample IDs
+V(g)$location <- data2$Location
+
+V(g)$colours <- colours[V(g)$location]
+threshold <- 0.8 # Adjust based on your similarity measure and analysis needs
+g1 <- delete_edges(g, E(g)[E(g)$weight < threshold])
+
+# layouts <- grep("^layout_", ls("package:igraph"), value=TRUE)[-1] 
+# # Remove layouts that do not apply to our graph.
+# layouts <- layouts[!grepl("bipartite|merge|norm|sugiyama|tree", layouts)]
+
+# ========= Visualize the network ==============
+plot(g1, vertex.size = 9, edge.width = E(g1)$weight, vertex.label = NA,
+     layout = layout_nicely, vertex.color = as.factor(V(g1)$location))
+
+legend("topright", legend = populations, pch = 21, col = colours, pt.bg = colours,
+       pt.cex = 1.5, cex = .7, bty = "n", ncol = 1, horiz  =  FALSE)
+```
+
+The generated network plot, with a strict threshold of **`r threshold`**, reveals a distinct pattern of genetic connectivity between samples. This high threshold highlights a network characterized by a closely related groups, indicating high genetic similarity within the group, while also highlighting isolated nodes that represent unique genetic signatures. This visualization highlights the presence of significant genetic differentiation and potential barriers to gene flow within the study population.
+
+#### Community Detection Methods
+
+When we analyze networks, it is important to discover communities. Communities are an important property of many networks in which a particular network may have multiple communities such that nodes inside a community are densely connected. These methods leverage algorithms to cluster nodes (e.g., individuals, or populations) based on patterns of similarity or connectivity, revealing underlying modular structures that might correspond to functional units, genetic similarities, or evolutionary relationships. It can be also used with machine learning to detect communities with similar properties. Moreover, since people tend to group with others similar to them, it helps us to identify users with a high number of connections and observe the depth of their reach within a network.The community detection algorithms (e.g., cluster_louvain) can help identify clusters within the network that represent closely related groups of samples. By applying these techniques, researchers can uncover hidden patterns of organization within genetic data, offering insights into the dynamics of genetic variation, interaction, and evolution. This approach not only enhances our understanding of genetic architecture but also guides targeted research and conservation efforts by identifying critical components within the genetic network.
+
+<!-- \begin{landscape} -->
+1. **Louvain algorithm**
+
+The Louvain algorithm presents itself as a very efficient and widely adopted method for detecting communities within complex networks. It's a simple algorithm that can quickly find clusters with high modularity in large networks. The so-called modularity measures the density of connection within clusters compared to the density of connections between clusters (Blondel 2008). Its iterative, hierarchical approach allows the algorithm to discover structures at different scales, from small, tightly knit groups to larger, less connected communities. The simplicity and scalability of the algorithm makes it particularly useful for analyzing large sets of genetic data, providing insight into the underlying structure and organization of genetic information, thereby facilitating deeper understanding. in-depth look at genetic relationships and evolutionary models. It is used as an objective function to be maximized for some community detection techniques and takes on values between -1 and 1.
+
+```{r, fig.width = 7, fig.height = 7}
+
+# ===================================================
+# Community detection algorithms can help
+# identify clusters within the network 
+# that represent closely related groups of samples
+# ===================================================
+clusterlouvain <- cluster_louvain(g1)
+
+communities <-  tibble(sampleID = clusterlouvain$names, Community = clusterlouvain$membership) %>% 
+   inner_join(., data2[, c(1, 3, 4)], by = c("sampleID" = "sample_internal_id"))
+
+# Assign a color to each cluster
+# Here, we generate a color palette with a distinct color for each cluster
+colors <- rainbow(max(clusterlouvain$membership))
+
+# Convert membership IDs to labels (e.g., Community 1, Community 2, ...)
+# This step is optional and depends on whether you want custom names for communities
+community_labels <- paste("Community", clusterlouvain$membership)
+
+# Assign the labels to the graph vertices
+V(g1)$label <- community_labels
+
+# Plot the graph with vertex colors based on community and labels showing community names
+plot(g1, 
+     vertex.color = colors[clusterlouvain$membership],
+     vertex.size = 8, 
+     edge.width = E(g1)$weight, 
+     vertex.label = NA,
+     vertex.label.color = "black",  # Adjust label color as needed
+     vertex.label.cex = 0.8)  # Adjust label size as needed
+
+# legend("bottomright", legend = unique(community_labels), 
+#        pch = 21, col = colors, pt.bg = colors,
+#        pt.cex = 1.2, cex = .5, bty = "n", ncol = 1, horiz  =  FALSE)
+
+
+```
+
+<!-- \end{landscape} -->
+\newpage
+
+2. **Walktrap algorithm**. 
+
+The walktrap algorithm is used to identify communities in large networks via random walks. These random walks are then used to compute distances between nodes. Then, nodes are assigned into groups with small and large community distances via bottom-up hierarchical clustering.
+
+It is important to mention that this algorithm considers only one community per node, which in some cases may be not right.
+
+```{r, fig.width = 6, fig.height = 6}
+
+# ===================================================
+# Community detection algorithms can help
+# identify clusters within the network 
+# that represent closely related groups of samples
+# ===================================================
+clusterwalktrap <- cluster_walktrap(g1)
+
+# Assign a color to each cluster
+# Here, we generate a color palette with a distinct color for each cluster
+colors <- rainbow(max(clusterwalktrap$membership))
+
+# Convert membership IDs to labels (e.g., Community 1, Community 2, ...)
+# This step is optional and depends on whether you want custom names for communities
+community_labels <- paste("Community", clusterwalktrap$membership)
+
+# Assign the labels to the graph vertices
+V(g1)$label <- community_labels
+
+# Plot the graph with vertex colors based on community and labels showing community names
+plot(g1, 
+     vertex.color = colors[clusterwalktrap$membership],
+     vertex.size = 8, 
+     edge.width = E(g1)$weight, 
+     vertex.label = NA,
+     vertex.label.color = "black",  # Adjust label color as needed
+     vertex.label.cex = 0.8)  # Adjust label size as needed
+
+# legend("topright", legend = paste("Community", sort(unique(clusterwalktrap$membership))), 
+#        pch = 21, col = colors, pt.bg = colors,
+#        pt.cex = 1.2, cex = .5, bty = "n", ncol = 2, horiz  =  FALSE)
+
+
+```
+
+\newpage
+
+3. **Infomap algorithm**. 
+
+The Infomap method was first introduced by Rosvall and Bergstrom (2008). The procedure of the algorithm is in the core identical to the procedure of Blondel. The algorithm repeats the two described phases until an objective function is optimized. However, as an objective function to be optimized, Infomap does not use modularity but the so-called map equation.
+
+The map equation exploits the duality between finding cluster structures in networks and minimizing the description length of the motion of a so-called random walk (Bohlin 2014). This random walker randomly moves from object to object in the network. The more the connection of an object is weighted, the more likely the random walker will use that connection to reach the next object. The goal is to form clusters in which the random walker stays as long as possible, i.e., the weights of the connections within the cluster should take on greater values than the weights of the connections between objects of different clusters. The map equation code structure is designed to compress the descriptive length of the random walk when the random walker lasts for extended periods of time in certain regions of the network.
+
+```{r, fig.width = 6, fig.height = 6}
+
+# ===================================================
+# Community detection algorithms can help
+# identify clusters within the network 
+# that represent closely related groups of samples
+# ===================================================
+clusterinfomap <- cluster_infomap(g1)
+
+# Assign a color to each cluster
+# Here, we generate a color palette with a distinct color for each cluster
+colors <- rainbow(max(clusterinfomap$membership))
+
+# Convert membership IDs to labels (e.g., Community 1, Community 2, ...)
+# This step is optional and depends on whether you want custom names for communities
+community_labels <- paste("Community", clusterinfomap$membership)
+
+# Assign the labels to the graph vertices
+V(g1)$label <- community_labels
+
+# Plot the graph with vertex colors based on community and labels showing community names
+plot(g1, 
+     vertex.color = colors[clusterinfomap$membership],
+     vertex.size = 8, 
+     edge.width = E(g1)$weight, 
+     vertex.label = NA,
+     vertex.label.color = "black",  # Adjust label color as needed
+     vertex.label.cex = 0.8)  # Adjust label size as needed
+
+# legend("topright", legend = unique(community_labels), 
+#        pch = 21, col = colors, pt.bg = colors,
+#        pt.cex = 1.2, cex = .5, bty = "n", ncol = 1, horiz  =  FALSE)
+
+
+```
+
+\newpage
+
+4. **Greedy modularity algorithm**. 
+
+The greedy modularity optimization is another method which helps us detect communities by iteratively including and removing nodes to maximize the modularity.
+
+```{r, fig.width = 5, fig.height = 5}
+
+# ===================================================
+# Community detection algorithms can help
+# identify clusters within the network 
+# that represent closely related groups of samples
+# ===================================================
+clustergreedy <- cluster_fast_greedy(g1)
+
+# Assign a color to each cluster
+# Here, we generate a color palette with a distinct color for each cluster
+colors <- rainbow(max(clustergreedy$membership))
+
+# Convert membership IDs to labels (e.g., Community 1, Community 2, ...)
+# This step is optional and depends on whether you want custom names for communities
+community_labels <- paste("Community", clustergreedy$membership)
+
+# Assign the labels to the graph vertices
+V(g1)$label <- community_labels
+
+# Plot the graph with vertex colors based on community and labels showing community names
+plot(g1, 
+     vertex.color = colors[clustergreedy$membership],
+     vertex.size = 8, 
+     edge.width = E(g1)$weight, 
+     vertex.label = NA,
+     vertex.label.color = "black",  # Adjust label color as needed
+     vertex.label.cex = 0.8)  # Adjust label size as needed
+
+# legend("topright", legend = paste("Community", sort(unique(clustergreedy$membership))), 
+#        pch = 21, col = colors, pt.bg = colors,
+#        pt.cex = 1.2, cex = .5, bty = "n", ncol = 2, horiz  =  FALSE)
+
+
+```
+
+\newpage
+
+5. **Leiden algorithm**.  
+
+The Leiden algorithm is similar to the Louvain algorithm, cluster_louvain, but it is faster and yields higher quality solutions. It can optimize both modularity and the Constant Potts Model, which does not suffer from the resolution-limit
+
+```{r, fig.width = 5, fig.height = 5}
+# ===================================================
+# Community detection algorithms can help
+# identify clusters within the network 
+# that represent closely related groups of samples
+# ===================================================
+clustereigen <- cluster_leading_eigen(g1)
+
+# Assign a color to each cluster
+# Here, we generate a color palette with a distinct color for each cluster
+colors <- rainbow(max(clustereigen$membership))
+
+# Convert membership IDs to labels (e.g., Community 1, Community 2, ...)
+# This step is optional and depends on whether you want custom names for communities
+community_labels <- paste("Community", clustereigen$membership)
+
+# Assign the labels to the graph vertices
+V(g1)$label <- community_labels
+
+# Plot the graph with vertex colors based on community and labels showing community names
+plot(g1, 
+     vertex.color = colors[clustereigen$membership],
+     vertex.size = 8, 
+     edge.width = E(g1)$weight, 
+     vertex.label = NA,
+     vertex.label.color = "black",  # Adjust label color as needed
+     vertex.label.cex = 0.8)  # Adjust label size as needed
+
+# legend("topright", legend = paste("Community", sort(unique(clustereigen$membership))), 
+#        pch = 21, col = colors, pt.bg = colors,
+#        pt.cex = 1.2, cex = .5, bty = "n", ncol = 2, horiz  =  FALSE)
+```
+
+
+\newpage
+
+6. **Community detection based on label propagation**. 
+
+This algorithm implements the label propagation-based community detection algorithm described by Raghavan, Albert and Kumara. This version extends the original method by the ability to take edge weights into consideration and also by allowing some labels to be fixed.
+
+Weights are taken into account as follows: when the new label of node i is determined, the algorithm iterates over all edges incident on node i and calculate the total weight of edges leading to other nodes with label 0, 1, 2, ..., k - 1 (where k is the number of possible labels). The new label of node i will then be the label whose edges (among the ones incident on node i) have the highest total weight.
+
+```{r, fig.width = 5, fig.height = 5}
+# ===================================================
+# Community detection algorithms can help
+# identify clusters within the network 
+# that represent closely related groups of samples
+# ===================================================
+clusterprop <- cluster_label_prop(g1)
+
+# Assign a color to each cluster
+# Here, we generate a color palette with a distinct color for each cluster
+colors <- rainbow(max(clusterprop$membership))
+
+# Convert membership IDs to labels (e.g., Community 1, Community 2, ...)
+# This step is optional and depends on whether you want custom names for communities
+community_labels <- paste("Community", clusterprop$membership)
+
+# Assign the labels to the graph vertices
+V(g1)$label <- community_labels
+
+# Plot the graph with vertex colors based on community and labels showing community names
+plot(g1, 
+     vertex.color = colors[clusterprop$membership],
+     vertex.size = 8, 
+     edge.width = E(g1)$weight, 
+     vertex.label = NA,
+     vertex.label.color = "black",  # Adjust label color as needed
+     vertex.label.cex = 0.8)  # Adjust label size as needed
+
+# legend("topright", legend = paste("Community", sort(unique(clusterprop$membership))), 
+#        pch = 21, col = colors, pt.bg = colors,
+#        pt.cex = 1.2, cex = .5, bty = "n", ncol = 2, horiz  =  FALSE)
+```
+
+Network analysis can complement phylogenetic analysis by providing insights into the potential transmission dynamics and relationships that are not strictly hierarchical and might involve recombination events or horizontal gene transfer.
+
+#### Jaccard similarity coefficient:
+Measures the similarity between sample sets, defined as the size of the intersection divided by the size of the union of the sample sets. Primarily used for presence-absence data.
+
+#### Sørensen-Dice coefficient (Dice similarity):
+The Dice coefficient is a measure of the similarity between two sets, A and B. The coefficient ranges from 0 to 1, where 1 indicates that the two sets are identical, and 0 indicates that the two sets have no overlap. The Dice coefficient has several advantages over other similarity metrics. It is particularly useful for imbalanced datasets, where one set may be much larger than the other.
+
+*A high Dice coefficient value indicates a high level of similarity between the predicted and ground truth masks, meaning that the segmentation model or algorithm is performing well. Conversely, a low Dice coefficient value indicates poor segmentation performance.*
+
+#### Fst (Fixation Index):
+Measures genetic differentiation among populations based on genetic polymorphism data. It ranges from 0 (no differentiation) to 1 (complete differentiation). Fst is widely used in population genetics to assess genetic structure.
+
+```{r, table, echo=FALSE}
+# fst <- readRDS("../spatial_analysis/pairwise_pop_fst.rds")
+# # fst <- readRDS("barcodes/spatial_analysis/pairwise_years_fst.rds")
+# 
+# Fst <- fst$Fsts %>%
+#    as.data.frame() %>% 
+#    rownames_to_column(., var = "Location") %>% 
+#    mutate(across(where(is.numeric), \(x) round(x, 3))) %>% 
+#    mutate(across(everything(), ~ replace(., . < 0, 0)))
+#    
+# flextable::flextable(Fst) %>% 
+#    autofit()
+```
+
+#### Nei's genetic distance (Nei 1972):
+A measure of the genetic distance between populations, taking into account the genetic identity and allelic frequencies.
+Used to infer evolutionary relationships and population structure.
+
+# Hotspot identification
+Spatial analysis to identify hotspots of high transmission rates or clusters of genetically similar infections involves using statistical methods and indices that can detect areas with significantly higher incidences of disease or genetic similarity than would be expected by chance. This analysis can be crucial for targeting interventions and understanding the spatial dynamics of infectious diseases.
+
+```{r}
+
+metadata <- read_delim("../data/barcode_gambia.tsv") %>% 
+  dplyr::filter(Location != "Nkakat Eyamba" & Location != "Ngayen Sanjal") %>% 
+  select(sample_internal_id,  Year, Location)
+
+# data munging
+mtdt_x <- metadata %>%
+  dplyr::rename(p1 = sample_internal_id)
+
+mtdt_y <- metadata %>%
+  dplyr::rename(p2 = sample_internal_id)
+
+# Only run this chunk if you are loading a local shapefile
+shape.gmb <- st_read( "../gis_coordinates/geoBoundaries-GMB-ADM3-all/geoBoundaries-GMB-ADM3_simplified.shp", quiet = TRUE)
+
+# # Load coordinates
+# coordinates <- readxl::read_xlsx("../coordinates.xlsx", sheet = 2)
+# 
+# ibs_matrix <- read_delim("../spatial_analysis/gambia_ibs.tsv")
+
+ibs <- broom::tidy(as.dist(genetic_similarity)) %>%  
+  magrittr::set_colnames(c("p1", "p2", "ibs"))
+
+ibs <- dplyr::left_join(ibs, mtdt_x, by = "p1") %>%
+  dplyr::left_join(., mtdt_y, by = "p2") %>%
+  rename_with(., ~gsub(".x", "_p1", .x, fixed = T)) %>%
+  rename_with(., ~gsub(".y", "_p2", .x, fixed = T))
+
+df_ibs <- ibs %>% 
+  mutate(population = ifelse(Location_p1 == Location_p2, Location_p1, NA)) %>%
+  group_by(population) %>% 
+  summarise(N = n(), 
+            mean_ibs = mean(ibs),
+            median_ibs = median(ibs),
+            sdt = sd(ibs),
+            .groups = "drop") %>% 
+  arrange(desc(mean_ibs)) %>%
+  left_join(., coordinates, by = c("population" = "Locations")) %>% 
+  drop_na()
+```
+
+1. **Getis-Ord Gi* (Hotspot Analysis)**
+
+The Getis Ord Gi* statistic is what is used in "Hot spot analysis". It looks at how local spatial variance in a single variable, as mentioned by u/Drewddit. It was advanced by Artur Getis and Keith Ord. MGWR is built on Geographically weighted regression, which is built on OLS regression. GWR adds a spatial weighted matrix into a
+normal regression equation, as opposed to assuming that there is not local variance. Multi-scale and Geographically and Temporally Weighted Regression both change that matrix to weigh variables differently in an analysis.
+
+```{r hotspot_gi, fig.width = 12, fig.height = 6}
+df_sf <- st_as_sf(df_ibs, coords = c("longitude", "latitude"), 
+                  crs = st_crs(shape.gmb), na.fail = FALSE, agr = "constant")
+
+
+# Assuming 'your_data' is an sf object with coordinates and a value column 'values'
+coords <- st_centroid(st_geometry(df_sf), of_largest_polygon=TRUE)
+
+values <- df_sf$mean_ibs
+
+# Neighbors and weights
+nb <- knn2nb(knearneigh(coords, k = 4), sym = TRUE)
+lw <- nb2listw(nb, style = "W")
+
+# Compute Getis-Ord Gi*
+gi_star <- localG(values, lw, zero.policy = TRUE)
+
+# Plot hotspots
+# plot(st_geometry(df_sf), col = ifelse(gi_star > quantile(gi_star, 0.95), "red", "white"))
+
+data_gi <- cbind(df_sf, as.vector(gi_star)) %>% 
+  rename("gi" = "as.vector.gi_star.")
+
+# Plotting
+p1 <- ggplot() +
+  geom_sf(data = shape.gmb, fill = "white", color = '#000000', linewidth = 0.5) + # Plot the base map
+  geom_sf(data = data_gi, aes(color = mean_ibs), size = 8, lwd = 0.15) + #, show.legend = FALSE
+  scale_color_gradient(low = "pink", high = "darkred") +
+  labs(title = "Mean IBS Values By Village", color = "Mean IBS") +
+  ggrepel::geom_label_repel(data = df_ibs, aes(label = population, x = longitude, y = latitude), 
+                            color = '#000000', size = 4, box.padding = unit(1, "lines"), 
+                            segment.color = '#132B43',  max.overlaps = Inf) +
+  theme_void() + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+        legend.title = element_text(face = "bold", size = 12))
+
+p2 <- ggplot() +
+  geom_sf(data = shape.gmb, fill = "white", color = '#000000', linewidth = 0.5) + # Plot the base map
+  geom_sf(data = data_gi, aes(color = gi), size = 8, lwd = 0.15) + #, show.legend = FALSE
+  scale_color_gradient(low = "pink", high = "darkred") +
+  labs(title = "Getis Ord Gi* statistic showing Hotspot Villages", color = "Getis-Ord Gi*") +
+  ggrepel::geom_label_repel(data = df_ibs, aes(label = population, x = longitude, y = latitude), 
+                            color = '#000000', size = 4, box.padding = unit(1, "lines"), 
+                            segment.color = '#132B43',  max.overlaps = Inf) +
+  theme_void() + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+        legend.title = element_text(face = "bold", size = 12))
+
+combined_plot <- p1/p2
+
+print(combined_plot)
+```
+
+
+2. **Moran's I**
+
+Moran's I is a measure of spatial autocorrelation that evaluates whether the pattern expressed is clustered, dispersed, or random across the study area. It compares the value of a variable at one location with the value of the same variable at nearby locations. High positive Moran's I values indicate clustering of similar values (e.g., high transmission rates or genetic similarity).
+
+```{r hotspot_moran, fig.width = 12, fig.height = 6}
+# Assuming you have an sf object `gen_samples` with columns `gen_sim` (genetic similarity) and geometry
+# Convert sf object to spatial object (if necessary)
+gen_samples_sp <- as(df_sf, "Spatial")
+
+# Define neighbors (e.g., using k-nearest neighbors)
+coords <- coordinates(gen_samples_sp)
+nb <- knn2nb(knearneigh(coords, k = 4), sym = TRUE)
+
+# Calculate Moran's I for genetic similarity
+lw <- nb2listw(nb, style = "W")
+moran <- moran.test(df_sf$mean_ibs, lw)
+print(moran)
+
+# Plotting Moran's I scatterplot
+moran.plot(df_sf$mean_ibs, lw)
+
+# Compute local Moran
+local <- localmoran(x = df_sf$mean_ibs, listw = lw)
+
+# binds results to our polygon shapefile
+moran.map <- cbind(df_sf, local)
+
+ggplot() +
+  geom_sf(data = shape.gmb, fill = "white", color = '#000000', linewidth = 0.5) + # Plot the base map
+  geom_sf(data = moran.map, aes(color = Ii), size = 8, lwd = 0.15) + #, show.legend = FALSE
+  scale_color_gradient(low = "pink", high = "darkred") +
+  labs(title = "Moran Local spatial autocorrelation", color = "local moran statistic") +
+  ggrepel::geom_label_repel(data = df_ibs, aes(label = population, x = longitude, y = latitude), 
+                            color = '#000000', size = 4, box.padding = unit(1, "lines"), 
+                            segment.color = '#132B43',  max.overlaps = Inf) +
+  theme_void() + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+        legend.title = element_text(face = "bold", size = 12))
+
+```
+
+3. **Geary's C**
+
+Geary's C is another measure of spatial autocorrelation, similar to Moran's I, but it is more sensitive to differences between neighboring locations. It focuses on the dissimilarities between adjacent areas. Values significantly lower than 1 indicate spatial clustering of similar values.
+
+4. **Kulldorff’s Spatial Scan Statistic**
+
+Used in SaTScan software, this method scans the study area for clusters by moving a circular window across the area and evaluating the likelihood of observing the number of cases within the window by chance. It's widely used for detecting disease outbreaks and can be adapted for identifying clusters of genetically similar infections.
+
+```{r}
+# # Install rsatscan if not already installed
+# if (!requireNamespace("rsatscan", quietly = TRUE)) install.packages("rsatscan")
+# 
+# library(rsatscan)
+# 
+# # Assuming you have the data prepared as needed for SaTScan
+# # This usually involves specifying a case file, population file, and coordinate file.
+# satscan_results <- rsatscan::satscan(events = "gen_sim_cases.csv", 
+#                                       geocodes = "coords.csv", 
+#                                       params = satscan.params(statistic = "Poisson", analysis.type = "retrospective"))
+# 
+# # Examine the results
+# print(satscan_results)
+
+```
+
+
+## Temporal dynamics analysis
+To analyze how genetic variation changes over time and understand the spread and dynamics of transmission, several indices and methods can be employed. These analyses help in tracking the evolution of pathogens, identifying the emergence of new variants, and understanding how these changes influence transmission dynamics. 
+
+#### Temporal Fst (Fixation Index):
+Temporal Fst compares genetic differentiation between populations at different time points. It measures how genetic variance is distributed over time, providing insights into the population structure's temporal dynamics. A high Fst value indicates significant genetic differentiation, which could result from selection pressure, population bottlenecks, or founder effects.
+
+#### Haplotype diversity over time:
+Haplotype diversity measures the uniqueness of the genetic variants present in a population. Tracking changes in haplotype diversity over time can indicate the emergence or disappearance of strains, reflecting how genetic diversity is influenced by transmission dynamics, selection pressures, and population size changes.
+
+# Distribution of drug resistant haplotypes
+Since the SNPs are linked to drug resistance, we analyzed the prevalence of these resistance-associated SNPs in different locations and over time.
+
+Estimating the prevalence of molecular markers associated with drug resistance involves identifying specific genetic mutations or patterns within a pathogen's genome that confer resistance to antimalarial drugs. This process is crucial in understanding the spread of resistance and informing treatment guidelines.
+
+```{r, fig.width = 13, fig.height = 8}
+prevalence <- readRDS("../temporal_analysis/prevalence_over_time.rds")
+
+plot_common_haplotypes <- function(hap_data, gene_name){
+   hap_data <- hap_data %>%
+      group_by(Haplotypes) %>%
+      filter(n_distinct(Year) >= 3) %>%
+      ungroup() 
+   
+   # Select the top 2 most common haplotypes based on average frequency
+   top_haplotypes <- hap_data %>%
+      group_by(Year, Haplotypes) %>%
+      summarise(AvgFrequency = mean(Prevalence), .groups = 'drop') %>%
+      ungroup() %>%
+      filter(!grepl("-", Haplotypes) & AvgFrequency > 1)
+   
+   # Filter the original dataframe to keep only the top haplotypes
+   # Plotting
+   p <- ggplot(top_haplotypes, aes(x = Year, y = AvgFrequency, color = Haplotypes, group = Haplotypes)) +
+      geom_line(linewidth = 1) + 
+      geom_point(size = 2) +
+      theme_minimal() +
+      labs(x = "Year", y = "Frequency (%)", color = gene_name) +
+      scale_color_brewer(palette = "Set1") +
+      scale_x_continuous(breaks = 2016:2022, limits = c(2016, 2022)) + # Customize x-axis
+      theme(axis.line = element_line(colour = "#000000", linewidth = 2),
+            axis.title = element_text(color = "#000000", face = "bold", size = 11),
+            axis.text.x = element_text(color = "#000000", face = "bold", angle = 90),
+            axis.text.y = element_text(color = "#000000", face = "bold", size = 9),
+            legend.title = element_text(color = "#000000", face = "bold", size = 11, hjust = .5))
+   
+   return(p)
+}
+
+first_set <- prevalence[c(1:4)]
+# Apply the function to each element of the list, passing the element name (gene name) as an argument
+plots <- mapply(plot_common_haplotypes, first_set, 
+                names(first_set), SIMPLIFY = FALSE)
+
+# Display the plots
+# invisible(lapply(plots, print))
+
+combined_plot <- reduce(plots, `+`) + 
+   plot_layout(ncol = 2) # Arrange plots in a single column
+
+# Print the combined plot
+combined_plot
+```
+
+```{r, fig.width = 13, fig.height = 8}
+second_set <- prevalence[c(5:8)]
+# Apply the function to each element of the list, passing the element name (gene name) as an argument
+plots <- mapply(plot_common_haplotypes, second_set, 
+                names(second_set), SIMPLIFY = FALSE)
+
+# Display the plots
+# invisible(lapply(plots, print))
+
+combined_plot <- reduce(plots, `+`) + 
+   plot_layout(ncol = 2) # Arrange plots in a single column
+
+# Print the combined plot
+combined_plot
+```
+
+We also explored the joint distribution of all combinations of haplotypes in all antimalarial resistance genes and particularly in *PfCRT*, *PfDHFR*, *PfDHPS* and *PfMDR1* respectively. Raw combinations of mutations were visualized using the **UpSetR** package in R.
+
+```{r upset, fig.width = 12, fig.height = 10}
+
+library(ComplexUpset)
+# Function
+generate_combinations <- function(haplotype) {
+   # Identify segments split by brackets
+   segments <- strsplit(haplotype, "\\[|\\]", perl = TRUE)[[1]]
+   
+   # Initialize a list to store options (constant or variable)
+   options_list <- list()
+   
+   for (i in 1:length(segments)) {
+      segment <- segments[i]
+      if (i %% 2 == 0) {  # Even-indexed segments are variable parts
+         options_list[[length(options_list) + 1]] <- strsplit(segment, "/")[[1]]
+      } else {  # Odd-indexed segments are constant parts
+         # Split constant segments into individual characters to maintain the structure
+         options_list[[length(options_list) + 1]] <- segment
+      }
+   }
+   
+   # Flatten the list to prepare for combination
+   options_list <- lapply(options_list, function(x) if (length(x) == 0) NA else x)
+   
+   # Generate all possible combinations
+   combinations <- expand.grid(options_list, stringsAsFactors = FALSE)
+   
+   # Concatenate parts to form haplotypes
+   combined_haplotypes <- apply(combinations, 1, function(x) paste0(x, collapse = ""))
+   
+   return(combined_haplotypes)
+}
+# End of function
+
+# Example dataframe
+# df <- readxl::read_xlsx("../../01_data/FinalgambianDataset.xlsx") %>% 
+#    dplyr::rename(SampleID = `Sample Internal ID`, P23.BP = `P23:BP`) %>% 
+#    select(1,3,4,14:21) %>% 
+#    dplyr::filter(Location != "Nkakat Eyamba" & Location != "Ngayen Sanjal")
+
+hap_data <- data %>% 
+   inner_join(., df, by = c("sample_internal_id", "Year"))
+
+haplotype_upsetR_plot <- function(hap_data, gene_name, n = 15){
+   
+   # Extract gene
+   gene <- hap_data %>% 
+      # select(1:3, PfCRT) %>%
+      group_by({{gene_name}}, Year) %>%
+      filter(n() > 6) %>%
+      # count(Year) %>%
+      # arrange(Year)
+      ungroup() %>% 
+      mutate(gene_name = if_else(grepl("-----", {{gene_name}}), "None", {{gene_name}})) %>%
+      filter(!grepl("-", {{gene_name}})) %>% 
+      dplyr::select(sample_internal_id, gene_name)
+   
+   # Extract drug-resistance haplotype
+   my_matrix <- gene %>% 
+      # Applying the function and expanding the dataframe
+      rowwise() %>%
+      mutate(Combinations = list(generate_combinations(gene_name))) %>%
+      unnest(Combinations) %>%
+      select(-gene_name) %>%
+      rename(gene_name = Combinations) %>% 
+      pivot_longer(-sample_internal_id, names_to = "mutation", values_to = "Haplotype") %>% 
+      mutate(Presence = 1) %>%
+      pivot_wider(names_from = Haplotype, values_from = Presence, values_fill = list(Presence = 0)) %>%
+      select(-mutation) %>%
+      distinct()
+   
+   my_matrix <- my_matrix[!duplicated(my_matrix$sample_internal_id), ]
+   
+   # Prepare the data for UpSetR (remove the sample identifier column)
+   data_for_upsetr <- my_matrix[,-1]
+   
+   UpSetR::upset(as.data.frame(data_for_upsetr), 
+         sets = colnames(data_for_upsetr),
+         keep.order = TRUE, 
+         mainbar.y.label = "Haplotype Intersections", 
+         sets.x.label = "% of haplotypes",
+         main.bar.color = rainbow(n),
+         point.size = 3, line.size = 1.5,
+         text.scale = 2.5,
+         sets.bar.color = "gray50") # , order.by = "freq"
+   
+   haplotypes <- colnames(data_for_upsetr)
+
+   ComplexUpset::upset(as.data.frame(data_for_upsetr), haplotypes, min_size=5, 
+                       themes=list(default = theme_minimal() +
+                                    theme(legend.position = "none",
+                                       axis.title.x = element_blank(),
+                                          axis.title.y = element_text(face = 'bold', color = "#000000", size = 12),
+                                          axis.text.x = element_blank(),
+                                          axis.text.y = element_text(face = 'bold', color = "#000000", size = 10),
+                                          axis.ticks.x = element_blank())),
+                       name='Haplotypes', width_ratio=0.2,
+                       base_annotations = list(
+                          'Intersection size'=(
+                             intersection_size(
+                                text_mapping=aes(
+                                   label=paste0(round(!!get_size_mode('exclusive_intersection')/nrow(data_for_upsetr) * 100, 1), '%'),
+                                   size = 10), 
+                                text_colors=c(on_background='brown', on_bar='yellow')
+                             ) 
+                             + ylab('Intersection %')
+                             + scale_y_continuous(
+                                labels=scales::percent_format(scale=100 / nrow(data_for_upsetr)))),
+                          # ,breaks=c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100) / 100 * nrow(data_for_upsetr)
+                          'Intersection ratio'=intersection_ratio()),
+                       set_sizes=(upset_set_size(filter_intersections=FALSE) + 
+                                     theme(axis.title = element_blank()))
+   )
+
+}
+
+plot1 <- haplotype_upsetR_plot(hap_data, PfCRT, n = 3)
+plot2 <- haplotype_upsetR_plot(hap_data, PfDHFR, n = 2)
+plot3 <- haplotype_upsetR_plot(hap_data, PfDHPS, n = 6)
+plot4 <- haplotype_upsetR_plot(hap_data, PfMDR1, n = 4)
+
+par(mfrow=c(2,2))
+plot1
+plot2
+plot3
+plot4
+```
+

@@ -1,0 +1,79 @@
+p1	p2	fst	Year
+Basse	Brikama	0.01	2017
+Ijede	Brikama	0.01	2017
+Ijede	Basse	0.001	2017
+Brikama	Basse	0.026	2018
+Brikama	Basse	0.002	2019
+Brikamaba	Basse	0.003	2019
+Brikamaba	Brikama	0.005	2019
+Soma	Basse	0.002	2019
+Soma	Brikama	0.002	2019
+Soma	Brikamaba	0.004	2019
+Yerobawol	Basse	0.002	2019
+Yerobawol	Brikama	0.004	2019
+Yerobawol	Brikamaba	0.003	2019
+Yerobawol	Soma	0.002	2019
+Sabi	Basse	0	2019
+Sabi	Brikama	0.003	2019
+Sabi	Brikamaba	0.003	2019
+Sabi	Soma	0.002	2019
+Sabi	Yerobawol	0.002	2019
+Kerewan	Basse	0.011	2019
+Kerewan	Brikama	0.01	2019
+Kerewan	Brikamaba	0.009	2019
+Kerewan	Soma	0.011	2019
+Kerewan	Yerobawol	0.011	2019
+Kerewan	Sabi	0.01	2019
+Fajikunda	Basse	0.004	2019
+Fajikunda	Brikama	0.004	2019
+Fajikunda	Brikamaba	0.005	2019
+Fajikunda	Soma	0.002	2019
+Fajikunda	Yerobawol	0.004	2019
+Fajikunda	Sabi	0.004	2019
+Fajikunda	Kerewan	0.013	2019
+Pirang	Basse	0.006	2019
+Pirang	Brikama	0.002	2019
+Pirang	Brikamaba	0.008	2019
+Pirang	Soma	0.006	2019
+Pirang	Yerobawol	0.008	2019
+Pirang	Sabi	0.008	2019
+Pirang	Kerewan	0.015	2019
+Pirang	Fajikunda	0.004	2019
+Sotuma Sere	Basse	0.001	2019
+Sotuma Sere	Brikama	0.001	2019
+Sotuma Sere	Brikamaba	0.003	2019
+Sotuma Sere	Soma	0.002	2019
+Sotuma Sere	Yerobawol	0.002	2019
+Sotuma Sere	Sabi	0.001	2019
+Sotuma Sere	Kerewan	0.012	2019
+Sotuma Sere	Fajikunda	0.003	2019
+Sotuma Sere	Pirang	0.006	2019
+Bansang	Basse	0.001	2019
+Bansang	Brikama	0.002	2019
+Bansang	Brikamaba	0.003	2019
+Bansang	Soma	0.002	2019
+Bansang	Yerobawol	0.001	2019
+Bansang	Sabi	0	2019
+Bansang	Kerewan	0.009	2019
+Bansang	Fajikunda	0.003	2019
+Bansang	Pirang	0.004	2019
+Bansang	Sotuma Sere	0	2019
+Brikama	Basse	0.031	2020
+Yerobawol	Basse	0.004	2020
+Yerobawol	Brikama	0.027	2020
+Bansang	Basse	0	2020
+Bansang	Brikama	0.025	2020
+Bansang	Yerobawol	0.001	2020
+Soma	Basse	0.004	2020
+Soma	Brikama	0.029	2020
+Soma	Yerobawol	0.001	2020
+Soma	Bansang	0.001	2020
+Kerewan	Basse	0.001	2020
+Kerewan	Brikama	0.017	2020
+Kerewan	Yerobawol	0.001	2020
+Kerewan	Bansang	0	2020
+Kerewan	Soma	0.006	2020
+Fajikunda	Brikama	0.003	2021
+Kafuta	Fatoto	0.032	2022
+Soma	Fatoto	0.02	2022
+Soma	Kafuta	0.022	2022
